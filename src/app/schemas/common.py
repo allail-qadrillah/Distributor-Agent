@@ -4,10 +4,9 @@ Validation mirrors the database constraints in
 src/app/database/migrations/001_initial_schema.sql — single source, no
 duplicated rules in domain modules.
 """
-from datetime import datetime
+
 from decimal import Decimal
 from typing import Annotated
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 

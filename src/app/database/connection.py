@@ -14,6 +14,7 @@ Design v0.1:
 Transaction semantics: transaction() commits on success, rolls back and
 re-raises on failure. Exceptions are never swallowed.
 """
+
 from collections.abc import Iterator
 from contextlib import contextmanager
 

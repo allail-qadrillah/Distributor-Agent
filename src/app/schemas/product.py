@@ -1,4 +1,5 @@
 """Product and product alias schemas. Columns mirror products/product_aliases."""
+
 from datetime import datetime
 from uuid import UUID
 

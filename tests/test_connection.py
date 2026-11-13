@@ -1,4 +1,5 @@
 """Connection management unit tests — fully mocked, no live database."""
+
 import importlib
 from contextlib import contextmanager
 
@@ -44,7 +45,9 @@ def fake_connect(monkeypatch):
     return calls
 
 
-def test_connection_uses_settings_and_parameterized_kwargs(fake_connect, monkeypatch) -> None:
+def test_connection_uses_settings_and_parameterized_kwargs(
+    fake_connect, monkeypatch
+) -> None:
     url = "postgresql://user:secret@db.example.com:5432/postgres"
     monkeypatch.setattr(settings, "supabase_db_url", url)
     with get_connection() as conn:

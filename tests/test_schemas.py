@@ -1,6 +1,7 @@
 """Schema validation tests. Pure Pydantic — no database connection."""
+
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -31,8 +32,10 @@ from app.schemas import (
     ProductUpdate,
 )
 
-NOW = datetime.now(timezone.utc)
-MIGRATION = Path(__file__).parents[1] / "src/app/database/migrations/001_initial_schema.sql"
+NOW = datetime.now(UTC)
+MIGRATION = (
+    Path(__file__).parents[1] / "src/app/database/migrations/001_initial_schema.sql"
+)
 
 
 def test_customer_create_valid() -> None:
@@ -72,7 +75,9 @@ def test_negative_price_rejected() -> None:
             price_list_id=uuid4(), product_id=uuid4(), unit_price=Decimal("-1.00")
         )
     with pytest.raises(ValidationError):
-        CustomerCreate(code="C1", name="x", phone="+6281234567890", credit_limit=Decimal("-5"))
+        CustomerCreate(
+            code="C1", name="x", phone="+6281234567890", credit_limit=Decimal("-5")
+        )
 
 
 def test_price_more_than_two_decimals_rejected() -> None:
@@ -96,7 +101,9 @@ def test_valid_uuid_parsing() -> None:
 
 def test_invalid_uuid_rejected() -> None:
     with pytest.raises(ValidationError):
-        CustomerCreate(code="C1", name="x", phone="+6281234567890", price_list_id="not-a-uuid")
+        CustomerCreate(
+            code="C1", name="x", phone="+6281234567890", price_list_id="not-a-uuid"
+        )
 
 
 def test_generated_fields_not_accepted_as_input() -> None:
@@ -106,9 +113,17 @@ def test_generated_fields_not_accepted_as_input() -> None:
     with pytest.raises(ValidationError):  # generated column
         OrderItemCreate(product_id=uuid4(), quantity=1, subtotal=Decimal("5"))
     with pytest.raises(ValidationError):  # system-managed status
-        OrderCreate(customer_id=uuid4(), items=[{"product_id": str(uuid4()), "quantity": 1}], status="draft")
+        OrderCreate(
+            customer_id=uuid4(),
+            items=[{"product_id": str(uuid4()), "quantity": 1}],
+            status="draft",
+        )
     with pytest.raises(ValidationError):  # system-generated order number
-        OrderCreate(customer_id=uuid4(), items=[{"product_id": str(uuid4()), "quantity": 1}], order_number="ORD-00000001")
+        OrderCreate(
+            customer_id=uuid4(),
+            items=[{"product_id": str(uuid4()), "quantity": 1}],
+            order_number="ORD-00000001",
+        )
 
 
 def _order_response(**over) -> OrderResponse:
@@ -176,6 +191,7 @@ def test_non_blank_strings_stripped() -> None:
 # Price authority / duplicate products
 # ---------------------------------------------------------------------------
 
+
 def test_order_item_input_rejects_unit_price() -> None:
     with pytest.raises(ValidationError):
         OrderItemCreate(product_id=uuid4(), quantity=1, unit_price=Decimal("500.00"))
@@ -206,7 +222,10 @@ def test_duplicate_product_ids_rejected() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OrderCreate(
             customer_id=uuid4(),
-            items=[{"product_id": pid, "quantity": 1}, {"product_id": pid, "quantity": 2}],
+            items=[
+                {"product_id": pid, "quantity": 1},
+                {"product_id": pid, "quantity": 2},
+            ],
         )
     assert "duplicate product_id" in str(exc_info.value)
 
@@ -226,6 +245,7 @@ def test_different_product_ids_accepted() -> None:
 # Schema fields vs actual database columns (migration is source of truth)
 # ---------------------------------------------------------------------------
 
+
 def _table_columns(sql: str, table: str) -> set[str]:
     match = re.search(rf"CREATE TABLE {table} \((.*?)\n\);", sql, re.S)
     assert match, f"table {table} not found in migration"
@@ -233,7 +253,9 @@ def _table_columns(sql: str, table: str) -> set[str]:
     for line in match.group(1).splitlines():
         line = line.split("--")[0].strip().rstrip(",")
         # column lines: start with a name, not a table-level constraint
-        if line and not line.upper().startswith(("CONSTRAINT", "UNIQUE", "CHECK", "PRIMARY KEY", "FOREIGN KEY")):
+        if line and not line.upper().startswith(
+            ("CONSTRAINT", "UNIQUE", "CHECK", "PRIMARY KEY", "FOREIGN KEY")
+        ):
             columns.add(line.split()[0])
     return columns
 
@@ -268,7 +290,9 @@ def test_schema_fields_match_database_columns() -> None:
         columns = _table_columns(sql, table)
         fields = set(model.model_fields)
         unexplained = fields - app_only - columns
-        assert not unexplained, f"{model.__name__}: fields not in {table}: {unexplained}"
+        assert not unexplained, (
+            f"{model.__name__}: fields not in {table}: {unexplained}"
+        )
 
 
 def test_order_status_enum_matches_db_check() -> None:

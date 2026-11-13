@@ -11,6 +11,7 @@ Security: never prints the password or the full connection string —
 only host:port/dbname. Raw exception text is suppressed because libpq
 errors can embed the DSN.
 """
+
 import re
 import sys
 from urllib.parse import urlsplit
@@ -64,7 +65,9 @@ def main() -> int:
     try:
         # autocommit=True: single read-only SELECT, no commit on exit,
         # no write possible from this script.
-        with psycopg.connect(url, autocommit=True, connect_timeout=CONNECT_TIMEOUT) as conn:
+        with psycopg.connect(
+            url, autocommit=True, connect_timeout=CONNECT_TIMEOUT
+        ) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT version()")
                 row = cur.fetchone()

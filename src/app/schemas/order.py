@@ -9,6 +9,7 @@ part of order input — the backend resolves prices from the customer's
 price list. Clients/LLMs never supply prices. OrderItemResponse returns
 the stored snapshot (unit_price + generated subtotal).
 """
+
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -20,7 +21,7 @@ from pydantic import Field, model_validator
 from app.schemas.common import BaseSchema
 
 
-class OrderStatus(str, Enum):
+class OrderStatus(str, Enum):  # noqa: UP042 -- Preserve Enum string conversion behavior.
     """Single source of truth for order status values.
 
     Values mirror the orders_status_allowed CHECK constraint.

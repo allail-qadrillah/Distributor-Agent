@@ -1,4 +1,5 @@
 """Customer schemas. Columns mirror the customers table."""
+
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
