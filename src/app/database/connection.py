@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import psycopg
+from psycopg.rows import dict_row
 
 from app.config import settings
 
@@ -30,11 +31,14 @@ def connect() -> psycopg.Connection:
     """Open a new connection from application settings.
 
     Parameterized configuration (kwargs), DSN from settings only.
+    dict_row: queries return dict rows, directly consumable by
+    Pydantic model_validate().
     """
     return psycopg.connect(
         settings.supabase_db_url,
         connect_timeout=CONNECT_TIMEOUT,
         application_name=APPLICATION_NAME,
+        row_factory=dict_row,
     )
 
 
