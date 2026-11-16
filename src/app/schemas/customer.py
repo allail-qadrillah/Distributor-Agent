@@ -14,7 +14,9 @@ class CustomerCreate(BaseSchema):
     name: NonBlankStr
     phone: PhoneStr
     address: str | None = None
-    credit_limit: Money = Decimal("0.00")  # mirrors DB DEFAULT 0
+    # NULL = not configured (rejects confirmation, never "unlimited");
+    # explicit 0 = configured zero (migration 002 semantics)
+    credit_limit: Money | None = None
     price_list_id: UUID | None = None  # NULL => 'GENERAL' fallback
     is_active: bool = True
 
@@ -36,7 +38,7 @@ class CustomerResponse(BaseSchema):
     name: str
     phone: str
     address: str | None
-    credit_limit: Decimal
+    credit_limit: Decimal | None  # NULL = not configured (migration 002)
     outstanding_balance: Decimal
     price_list_id: UUID | None
     is_active: bool

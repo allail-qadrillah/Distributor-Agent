@@ -12,12 +12,12 @@ The current domain includes customer, product, inventory, price, credit, and ord
 - `src/app/schemas` contains Pydantic request and response models.
 - `src/app/database/connection.py` owns Psycopg connection and transaction lifecycle; callers wrap multi-statement work in `transaction()`.
 - `src/app/repositories` contains database access for customer, product, inventory, price, and order records. Every public repository method takes `conn: psycopg.Connection` as first argument after `self`, and the supplied connection must use `dict_row`. Repositories own SQL execution and cursor lifecycle only; they never open or close connections or manage transactions.
-- `src/app/services`, `src/app/tools`, and `src/app/agents` are package placeholders. Business services and the OpenAI agent loop are not implemented yet.
-- `supabase/migrations/20261111000000_initial_schema.sql` defines the database schema and database-enforced business constraints.
+- `src/app/services` contains the service layer with `OrderService` (draft creation and confirmation); `src/app/services/exceptions.py` holds domain exceptions. `src/app/tools` and `src/app/agents` are package placeholders and not implemented yet.
+- Migrations define the database schema and database-enforced business constraints: `supabase/migrations/20261111000000_initial_schema.sql` (001, immutable, applied) and `supabase/migrations/20261116000000_credit_limit_nullable.sql` (002, applied — `customers.credit_limit` nullable, no default). Each migration is stored twice with identical content: `src/app/database/migrations/NNN_name.sql` and `supabase/migrations/YYYYMMDDHHMMSS_name.sql`. There is no migration runner; migrations are applied manually by executing the SQL (e.g. `psql -f`).
 
 ## Dependency direction
 
-The intended direction is `api → tools → services → repositories → database`, as documented in `README.md`. Current code mainly exercises repositories and database access. Keep business rules in services when that layer is added.
+The intended direction is `api → tools → services → repositories → database`, as documented in `README.md`. Current code covers repositories, database access, and the order-draft and order-confirmation service workflows. No API layer exists yet, so no production caller constructs `OrderService`. Keep business rules in services.
 
 ## Commands
 
@@ -39,7 +39,7 @@ Run a live integration smoke test only when Supabase is configured and the test 
 RUN_DB_SMOKE=1 uv run pytest tests/integration/<test_file>.py -v
 ```
 
-The integration tests create and clean up throwaway rows. They require `SUPABASE_DB_URL` and the initial migration.
+The integration tests create and clean up throwaway rows. They require `SUPABASE_DB_URL` and migrations 001–002 applied.
 
 ## Configuration
 

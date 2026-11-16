@@ -319,7 +319,15 @@ def test_db_exceptions_propagate(fake_db):
         with pytest.raises(psycopg.OperationalError):
             OrderRepository().create_order_items(conn, ORDER_ID, ITEMS_IN)
         with pytest.raises(psycopg.OperationalError):
+            OrderRepository().update_total_amount(conn, ORDER_ID, Decimal("1.00"))
+        with pytest.raises(psycopg.OperationalError):
             OrderRepository().get_by_id(conn, ORDER_ID)
+        with pytest.raises(psycopg.OperationalError):
+            OrderRepository().get_for_update(conn, ORDER_ID)
+        with pytest.raises(psycopg.OperationalError):
+            OrderRepository().sum_confirmed_totals(conn, CUSTOMER_ID)
+        with pytest.raises(psycopg.OperationalError):
+            OrderRepository().mark_confirmed(conn, ORDER_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -334,8 +342,22 @@ def test_repository_never_commits_rolls_back_or_closes(fake_db):
     _, conn = fake_db(results=[_item_row()])
     OrderRepository().create_order_items(conn, ORDER_ID, ITEMS_IN[:1])
 
+    _, conn = fake_db(results=[{**ORDER_ROW, "total_amount": Decimal("2800.00")}])
+    OrderRepository().update_total_amount(conn, ORDER_ID, Decimal("2800.00"))
+
     _, conn = fake_db(results=[ORDER_ROW, [_item_row()]])
     OrderRepository().get_by_id(conn, ORDER_ID)
+
+    _, conn = fake_db(results=[ORDER_ROW, [_item_row()]])
+    OrderRepository().get_for_update(conn, ORDER_ID)
+
+    _, conn = fake_db(results=[{"confirmed_total": Decimal("0.00")}])
+    OrderRepository().sum_confirmed_totals(conn, CUSTOMER_ID)
+
+    _, conn = fake_db(
+        results=[{**ORDER_ROW, "status": "confirmed", "confirmed_at": NOW}]
+    )
+    OrderRepository().mark_confirmed(conn, ORDER_ID)
 
     assert conn.calls == []  # no commit, no rollback, no close, no BEGIN
 
@@ -344,3 +366,129 @@ def test_repository_module_has_no_connection_factory():
     # connection injection: the module must never import its own way in
     assert "get_connection" not in vars(order_repo)
     assert "connect" not in vars(order_repo)
+
+
+# ---------------------------------------------------------------------------
+# 9. update_total_amount — total maintenance
+# ---------------------------------------------------------------------------
+
+
+def test_update_total_amount_updates_and_returns_response(fake_db):
+    updated_row = {**ORDER_ROW, "total_amount": Decimal("2800.00")}
+    cursor, conn = fake_db(results=[updated_row])
+    result = OrderRepository().update_total_amount(conn, ORDER_ID, Decimal("2800.00"))
+    assert isinstance(result, OrderResponse)
+    assert result.id == ORDER_ID
+    assert result.total_amount == Decimal("2800.00")
+    assert result.status is OrderStatus.DRAFT
+    sql, params = cursor.executed[0]
+    assert "UPDATE orders" in sql
+    assert "SET total_amount = %s" in sql
+    assert "WHERE id = %s" in sql  # scoped: only the intended order
+    assert "RETURNING" in sql
+    assert params == (Decimal("2800.00"), ORDER_ID)
+
+
+def test_update_total_amount_missing_order_returns_none(fake_db):
+    cursor, conn = fake_db(results=[None])
+    result = OrderRepository().update_total_amount(conn, uuid4(), Decimal("10.00"))
+    assert result is None
+
+
+def test_update_total_amount_writes_only_total(fake_db):
+    cursor, conn = fake_db(results=[ORDER_ROW])
+    OrderRepository().update_total_amount(conn, ORDER_ID, Decimal("1.00"))
+    sql, _ = cursor.executed[0]
+    set_clause = sql.split("SET", 1)[1].split("WHERE", 1)[0]
+    assert "total_amount" in set_clause
+    # system-generated values never written by the repository
+    for forbidden in ("status", "order_number", "customer_id"):
+        assert forbidden not in set_clause
+
+
+def test_update_total_amount_parameters_bound_never_interpolated(fake_db):
+    cursor, conn = fake_db(results=[{**ORDER_ROW}])
+    OrderRepository().update_total_amount(conn, ORDER_ID, Decimal("2800.00"))
+    sql, params = cursor.executed[0]
+    assert sql.count("%s") == 2
+    assert str(ORDER_ID) not in sql  # value travels as parameter only
+    assert str(Decimal("2800.00")) not in sql
+    assert params == (Decimal("2800.00"), ORDER_ID)
+
+
+# ---------------------------------------------------------------------------
+# 10. get_for_update — locked order read for the confirm workflow
+# ---------------------------------------------------------------------------
+
+
+def test_get_for_update_locks_order_and_returns_detail(fake_db):
+    item_rows = [_item_row()]
+    cursor, conn = fake_db(results=[ORDER_ROW, item_rows])
+    result = OrderRepository().get_for_update(conn, ORDER_ID)
+    assert isinstance(result, OrderDetailResponse)
+    assert result.id == ORDER_ID
+    assert len(result.items) == 1
+    sql, params = cursor.executed[0]
+    assert "FROM orders WHERE id = %s" in sql
+    assert "FOR UPDATE" in sql  # order row locked under the caller's transaction
+    assert params == (ORDER_ID,)
+    sql_items, params_items = cursor.executed[1]
+    assert "FROM order_items WHERE order_id = %s" in sql_items
+    assert "FOR UPDATE" not in sql_items  # items read unlocked
+    assert params_items == (ORDER_ID,)
+
+
+def test_get_for_update_missing_returns_none(fake_db):
+    cursor, conn = fake_db(results=[None])
+    assert OrderRepository().get_for_update(conn, uuid4()) is None
+    assert len(cursor.executed) == 1  # no items query after a miss
+
+
+# ---------------------------------------------------------------------------
+# 11. sum_confirmed_totals — credit exposure input
+# ---------------------------------------------------------------------------
+
+
+def test_sum_confirmed_totals_returns_decimal_sum(fake_db):
+    cursor, conn = fake_db(results=[{"confirmed_total": Decimal("1234.56")}])
+    result = OrderRepository().sum_confirmed_totals(conn, CUSTOMER_ID)
+    assert result == Decimal("1234.56")
+    sql, params = cursor.executed[0]
+    assert "SUM(total_amount)" in sql
+    assert "COALESCE" in sql  # NULL sum (no confirmed orders) -> 0.00
+    assert "status = 'confirmed'" in sql  # draft/cancelled/delivered excluded
+    assert params == (CUSTOMER_ID,)
+
+
+def test_sum_confirmed_totals_zero_when_no_confirmed_orders(fake_db):
+    cursor, conn = fake_db(results=[{"confirmed_total": Decimal("0.00")}])
+    assert OrderRepository().sum_confirmed_totals(conn, CUSTOMER_ID) == Decimal("0.00")
+
+
+# ---------------------------------------------------------------------------
+# 12. mark_confirmed — guarded draft -> confirmed transition
+# ---------------------------------------------------------------------------
+
+
+CONFIRMED_ROW = {**ORDER_ROW, "status": "confirmed", "confirmed_at": NOW}
+
+
+def test_mark_confirmed_guarded_update(fake_db):
+    cursor, conn = fake_db(results=[CONFIRMED_ROW])
+    result = OrderRepository().mark_confirmed(conn, ORDER_ID)
+    assert isinstance(result, OrderResponse)
+    assert result.status is OrderStatus.CONFIRMED
+    assert result.confirmed_at == NOW
+    sql, params = cursor.executed[0]
+    assert "UPDATE orders" in sql
+    assert "SET status = 'confirmed'" in sql
+    assert "confirmed_at = now()" in sql  # database clock
+    assert "WHERE id = %s AND status = 'draft'" in sql  # guarded
+    assert "RETURNING" in sql
+    assert params == (ORDER_ID,)
+
+
+def test_mark_confirmed_zero_rows_returns_none(fake_db):
+    # status no longer draft (or row gone): guarded UPDATE matches nothing
+    cursor, conn = fake_db(results=[None])
+    assert OrderRepository().mark_confirmed(conn, ORDER_ID) is None

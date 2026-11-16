@@ -30,6 +30,7 @@ _COLUMNS = (
 )
 _GET_BY_ID = f"SELECT {_COLUMNS} FROM customers WHERE id = %s"
 _GET_BY_PHONE = f"SELECT {_COLUMNS} FROM customers WHERE phone = %s"
+_GET_FOR_UPDATE = f"SELECT {_COLUMNS} FROM customers WHERE id = %s FOR UPDATE"
 
 
 class CustomerRepository:
@@ -54,5 +55,22 @@ class CustomerRepository:
         """
         with conn.cursor() as cur:
             cur.execute(_GET_BY_PHONE, (phone,))
+            row = cur.fetchone()
+        return CustomerResponse.model_validate(row) if row else None
+
+    def get_for_update(
+        self, conn: psycopg.Connection, customer_id: UUID
+    ) -> CustomerResponse | None:
+        """Return the customer with this id, row-locked, or None.
+
+        SELECT ... FOR UPDATE serializes concurrent credit-limit checks
+        for orders of the same customer. Migration 001 lock order: the
+        customer row is always locked FIRST. Under READ COMMITTED a
+        lock wait re-reads the latest committed row version, so callers
+        validate fresh data. No commit/rollback: the caller owns the
+        transaction.
+        """
+        with conn.cursor() as cur:
+            cur.execute(_GET_FOR_UPDATE, (customer_id,))
             row = cur.fetchone()
         return CustomerResponse.model_validate(row) if row else None

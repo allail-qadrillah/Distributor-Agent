@@ -50,6 +50,41 @@ def test_customer_create_valid() -> None:
     assert c.is_active is True
 
 
+def test_customer_credit_limit_null_zero_positive_accepted() -> None:
+    # migration 002 semantics: NULL = unconfigured, 0 = configured zero
+    base = {"code": "C1", "name": "x", "phone": "+6281234567890"}
+
+    omitted = CustomerCreate(**base)  # no implicit zero: default is NULL
+    assert omitted.credit_limit is None
+
+    explicit_null = CustomerCreate(**base, credit_limit=None)
+    assert explicit_null.credit_limit is None
+
+    zero = CustomerCreate(**base, credit_limit=Decimal("0.00"))
+    assert zero.credit_limit == Decimal("0.00")
+
+    positive = CustomerCreate(**base, credit_limit=Decimal("1.00"))
+    assert positive.credit_limit == Decimal("1.00")
+
+
+def test_customer_response_credit_limit_allows_null() -> None:
+    row = {
+        "id": uuid4(),
+        "code": "C1",
+        "name": "x",
+        "phone": "+6281234567890",
+        "address": None,
+        "credit_limit": None,  # as returned by Postgres after migration 002
+        "outstanding_balance": Decimal("0.00"),
+        "price_list_id": None,
+        "is_active": True,
+        "created_at": NOW,
+        "updated_at": NOW,
+    }
+    c = CustomerResponse.model_validate(row)
+    assert c.credit_limit is None
+
+
 def test_customer_invalid_phone() -> None:
     base = {"code": "C1", "name": "x"}
     for bad in ("081234567890", "+62 8123456789", "+6281234567890123456", "phone"):

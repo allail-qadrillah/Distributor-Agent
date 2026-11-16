@@ -102,6 +102,15 @@ def test_order_create_and_get_by_id_roundtrip():
             assert by_product[p2].subtotal == Decimal("2500.00")
             assert by_product[p1].unit_price == Decimal("150.00")  # stored snapshot
 
+            # service-style total maintenance: Decimal sum of the
+            # database-generated subtotals, one guarded UPDATE
+            total = sum((i.subtotal for i in items), Decimal("0.00"))
+            updated = repo.update_total_amount(conn, order.id, total)
+            assert isinstance(updated, OrderResponse)
+            assert updated.id == order.id
+            assert updated.total_amount == Decimal("2800.00")
+            assert updated.status is OrderStatus.DRAFT
+
             detail = repo.get_by_id(conn, order.id)
             assert isinstance(detail, OrderDetailResponse)
             assert detail.id == order.id and detail.order_number == order.order_number
@@ -110,11 +119,13 @@ def test_order_create_and_get_by_id_roundtrip():
                 Decimal("300.00"),
                 Decimal("2500.00"),
             }
+            assert detail.total_amount == Decimal("2800.00")
 
         with transaction() as conn:  # fresh read after commit + typo-safety
             persisted = repo.get_by_id(conn, order_id)
             assert persisted is not None
             assert persisted.order_number == order.order_number
+            assert persisted.total_amount == Decimal("2800.00")
             assert len(persisted.items) == 2
             assert repo.get_by_id(conn, uuid4()) is None
     finally:
@@ -128,3 +139,10 @@ def test_order_create_and_get_by_id_roundtrip():
                 conn.execute("DELETE FROM orders WHERE customer_id = %s", (cust_id,))
                 conn.execute("DELETE FROM products WHERE id IN (%s, %s)", (p1, p2))
                 conn.execute("DELETE FROM customers WHERE id = %s", (cust_id,))
+
+
+def test_update_total_amount_missing_order_returns_none():
+    # guarded UPDATE on a random id: 0 rows matched -> None, no data touched
+    with transaction() as conn:
+        result = OrderRepository().update_total_amount(conn, uuid4(), Decimal("1.00"))
+    assert result is None

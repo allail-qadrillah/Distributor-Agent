@@ -128,6 +128,35 @@ def test_get_by_phone_not_found(fake_db):
     assert CustomerRepository().get_by_phone(conn, "+628999999999") is None
 
 
+def test_get_for_update_locks_and_returns_customer(fake_db):
+    cursor, conn = fake_db(row=ROW)
+    result = CustomerRepository().get_for_update(conn, CUST_ID)
+    assert isinstance(result, CustomerResponse)
+    assert result.id == CUST_ID
+    sql, params = cursor.executed
+    assert "FOR UPDATE" in sql  # pessimistic row lock for credit checks
+    assert "WHERE id = %s" in sql
+    assert params == (CUST_ID,)
+
+
+def test_get_for_update_not_found(fake_db):
+    cursor, conn = fake_db(row=None)
+    assert CustomerRepository().get_for_update(conn, uuid4()) is None
+
+
+def test_null_credit_limit_maps_to_none(fake_db):
+    # migration 002: NULL (not configured) survives the round trip
+    cursor, conn = fake_db(row={**ROW, "credit_limit": None})
+    for method, arg in (
+        (CustomerRepository().get_by_id, CUST_ID),
+        (CustomerRepository().get_by_phone, ROW["phone"]),
+        (CustomerRepository().get_for_update, CUST_ID),
+    ):
+        result = method(conn, arg)
+        assert isinstance(result, CustomerResponse)
+        assert result.credit_limit is None
+
+
 def test_sql_parameterized_and_columns_exact(fake_db):
     cursor, conn = fake_db(row=ROW)
     CustomerRepository().get_by_id(conn, CUST_ID)
@@ -148,12 +177,15 @@ def test_db_exceptions_not_swallowed(fake_db):
         CustomerRepository().get_by_id(conn, CUST_ID)
     with pytest.raises(psycopg.OperationalError):
         CustomerRepository().get_by_phone(conn, "+6281234567890")
+    with pytest.raises(psycopg.OperationalError):
+        CustomerRepository().get_for_update(conn, CUST_ID)
 
 
 def test_repository_never_commits_rolls_back_or_closes(fake_db):
     cursor, conn = fake_db(row=ROW)
     CustomerRepository().get_by_id(conn, CUST_ID)
     CustomerRepository().get_by_phone(conn, "+6281234567890")
+    CustomerRepository().get_for_update(conn, CUST_ID)
     assert conn.calls == []  # no commit, no rollback, no close, no BEGIN
     assert cursor.closed is True  # cursor context still exited
 
