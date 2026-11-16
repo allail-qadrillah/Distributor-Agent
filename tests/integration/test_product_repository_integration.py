@@ -12,6 +12,8 @@ Safety:
 - Creates one throwaway product and one throwaway alias (random SKU/alias),
   never reuses or modifies existing records, deletes its own rows in
   teardown (alias explicitly, then product — cascade also covers it).
+- Every repository call receives the connection from transaction() —
+  the repository itself never opens, commits, or rolls back.
 """
 
 import os
@@ -49,22 +51,25 @@ def test_product_lookup_and_search_roundtrip():
             )
         inserted = True
 
-        by_id = repo.get_by_id(prod_id)
-        assert isinstance(by_id, ProductResponse)
-        assert by_id.sku == sku and by_id.unit == "pcs"
+        with transaction() as conn:  # caller-owned read transaction
+            by_id = repo.get_by_id(conn, prod_id)
+            assert isinstance(by_id, ProductResponse)
+            assert by_id.sku == sku and by_id.unit == "pcs"
 
-        by_sku = repo.get_by_sku(sku)
-        assert by_sku is not None and by_sku.id == prod_id
+            by_sku = repo.get_by_sku(conn, sku)
+            assert by_sku is not None and by_sku.id == prod_id
 
-        by_name = repo.search_by_name_or_alias(name)
-        assert any(p.id == prod_id for p in by_name)
+            by_name = repo.search_by_name_or_alias(conn, name)
+            assert any(p.id == prod_id for p in by_name)
 
-        by_alias = repo.search_by_name_or_alias(f"smokealias {prod_id.hex[:4]}")
-        assert any(p.id == prod_id for p in by_alias)
+            by_alias = repo.search_by_name_or_alias(
+                conn, f"smokealias {prod_id.hex[:4]}"
+            )
+            assert any(p.id == prod_id for p in by_alias)
 
-        assert repo.get_by_id(uuid4()) is None
-        assert repo.get_by_sku(f"SMOKE-UNKNOWN-{prod_id.hex[:8]}") is None
-        assert repo.search_by_name_or_alias("zzzz-no-such-product") == []
+            assert repo.get_by_id(conn, uuid4()) is None
+            assert repo.get_by_sku(conn, f"SMOKE-UNKNOWN-{prod_id.hex[:8]}") is None
+            assert repo.search_by_name_or_alias(conn, "zzzz-no-such-product") == []
     finally:
         if inserted:
             with transaction() as conn:  # cleanup own rows only

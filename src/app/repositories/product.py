@@ -8,11 +8,20 @@ Rules (same conventions as CustomerRepository):
   searches; never raw cursors.
 - Psycopg exceptions propagate (never swallowed) — user-safe mapping is
   the API layer's job.
+
+Connection injection (same contract as InventoryRepository/OrderRepository):
+- Every method receives the caller's connection and uses it for all
+  operations. This module never opens a connection and never manages
+  transaction lifecycle: no BEGIN, no COMMIT, no ROLLBACK, no close. The
+  caller owns the transaction.
+- The connection must use dict_row (app.database.connection.connect and
+  transaction() provide it).
 """
 
 from uuid import UUID
 
-from app.database.connection import get_connection
+import psycopg
+
 from app.schemas.product import ProductResponse
 
 # Exactly the ProductResponse columns — nothing more
@@ -38,30 +47,38 @@ def _escape_like(text: str) -> str:
 
 
 class ProductRepository:
-    def get_by_id(self, product_id: UUID) -> ProductResponse | None:
-        """Return the product with this id, or None."""
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_GET_BY_ID, (product_id,))
-                row = cur.fetchone()
+    def get_by_id(
+        self, conn: psycopg.Connection, product_id: UUID
+    ) -> ProductResponse | None:
+        """Return the product with this id, or None.
+
+        No commit/rollback: the caller owns the transaction.
+        """
+        with conn.cursor() as cur:
+            cur.execute(_GET_BY_ID, (product_id,))
+            row = cur.fetchone()
         return ProductResponse.model_validate(row) if row else None
 
-    def get_by_sku(self, sku: str) -> ProductResponse | None:
-        """Return the product with this exact sku, or None."""
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_GET_BY_SKU, (sku,))
-                row = cur.fetchone()
+    def get_by_sku(self, conn: psycopg.Connection, sku: str) -> ProductResponse | None:
+        """Return the product with this exact sku, or None.
+
+        No commit/rollback: the caller owns the transaction.
+        """
+        with conn.cursor() as cur:
+            cur.execute(_GET_BY_SKU, (sku,))
+            row = cur.fetchone()
         return ProductResponse.model_validate(row) if row else None
 
-    def search_by_name_or_alias(self, query: str) -> list[ProductResponse]:
+    def search_by_name_or_alias(
+        self, conn: psycopg.Connection, query: str
+    ) -> list[ProductResponse]:
         """Case-insensitive partial search over product names and aliases.
 
         Unique, active products only; empty list when nothing matches.
+        No commit/rollback: the caller owns the transaction.
         """
         pattern = f"%{_escape_like(query)}%"
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_SEARCH, (pattern, pattern))
-                rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(_SEARCH, (pattern, pattern))
+            rows = cur.fetchall()
         return [ProductResponse.model_validate(row) for row in rows]

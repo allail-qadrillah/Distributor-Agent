@@ -1,4 +1,8 @@
-"""CustomerRepository unit tests — mocked database access, no live Supabase."""
+"""CustomerRepository unit tests — mocked database access, no live Supabase.
+
+Connection-injection contract is under test: the repository receives the
+caller's connection, uses it, and never manages its lifecycle.
+"""
 
 import re
 from datetime import UTC, datetime
@@ -8,7 +12,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from app.repositories import customer as customer_repo
+import app.repositories.customer as customer_repo
 from app.repositories.customer import CustomerRepository
 from app.schemas.customer import CustomerResponse
 
@@ -39,15 +43,20 @@ COLUMNS = set(
 
 
 class FakeCursor:
-    def __init__(self, row=None):
+    def __init__(self, row=None, raising=None):
         self.row = row
+        self.raising = raising
         self.executed: tuple | None = None
         self.closed = False
 
     def execute(self, sql, params=None):
+        if self.raising:
+            raise self.raising
         self.executed = (sql, params)
 
     def fetchone(self):
+        if self.raising:
+            raise self.raising
         return self.row
 
     def __enter__(self):
@@ -59,53 +68,41 @@ class FakeCursor:
 
 
 class FakeConn:
+    """Caller-supplied connection; records lifecycle calls the repo must not make."""
+
     def __init__(self, cursor):
         self._cursor = cursor
-        self.closed = False
+        self.calls: list[str] = []  # any commit/rollback/close/BEGIN lands here
 
     def cursor(self):
         return self._cursor
 
-    def __enter__(self):
-        return self
+    def commit(self):
+        self.calls.append("commit")
 
-    def __exit__(self, *exc):
-        self.closed = True
-        return False
+    def rollback(self):
+        self.calls.append("rollback")
+
+    def close(self):
+        self.calls.append("close")
+
+    def execute(self, sql, params=None):
+        self.calls.append(f"execute: {sql}")
 
 
 @pytest.fixture
-def fake_db(monkeypatch):
-    """Patch get_connection inside the repository module; returns (cursor, conn)."""
-    holder: dict = {}
-
-    def _get_connection():
-        conn = holder["conn"]
-        return conn  # used as context manager
-
+def fake_db():
     def install(row=None, raising=None):
-        cursor = FakeCursor(row)
-        cursor.raising = raising
-
-        orig_fetchone = cursor.fetchone
-
-        def fetchone():
-            if cursor.raising:
-                raise cursor.raising
-            return orig_fetchone()
-
-        cursor.fetchone = fetchone
-        holder["cursor"] = cursor
-        holder["conn"] = FakeConn(cursor)
-        monkeypatch.setattr(customer_repo, "get_connection", _get_connection)
-        return cursor, holder["conn"]
+        cursor = FakeCursor(row=row, raising=raising)
+        conn = FakeConn(cursor)
+        return cursor, conn
 
     return install
 
 
 def test_get_by_id_found(fake_db):
     cursor, conn = fake_db(row=ROW)
-    result = CustomerRepository().get_by_id(CUST_ID)
+    result = CustomerRepository().get_by_id(conn, CUST_ID)
     assert isinstance(result, CustomerResponse)
     assert result.id == CUST_ID
     assert result.name == "Toko Sinar Jaya"
@@ -114,12 +111,12 @@ def test_get_by_id_found(fake_db):
 
 def test_get_by_id_not_found(fake_db):
     cursor, conn = fake_db(row=None)
-    assert CustomerRepository().get_by_id(uuid4()) is None
+    assert CustomerRepository().get_by_id(conn, uuid4()) is None
 
 
 def test_get_by_phone_found(fake_db):
     cursor, conn = fake_db(row=ROW)
-    result = CustomerRepository().get_by_phone("+6281234567890")
+    result = CustomerRepository().get_by_phone(conn, "+6281234567890")
     assert isinstance(result, CustomerResponse)
     sql, params = cursor.executed
     assert "WHERE phone = %s" in sql
@@ -127,13 +124,13 @@ def test_get_by_phone_found(fake_db):
 
 
 def test_get_by_phone_not_found(fake_db):
-    fake_db(row=None)
-    assert CustomerRepository().get_by_phone("+628999999999") is None
+    cursor, conn = fake_db(row=None)
+    assert CustomerRepository().get_by_phone(conn, "+628999999999") is None
 
 
 def test_sql_parameterized_and_columns_exact(fake_db):
     cursor, conn = fake_db(row=ROW)
-    CustomerRepository().get_by_id(CUST_ID)
+    CustomerRepository().get_by_id(conn, CUST_ID)
     sql, params = cursor.executed
     # placeholder SQL + separately passed params: no string interpolation
     assert "WHERE id = %s" in sql
@@ -148,12 +145,20 @@ def test_sql_parameterized_and_columns_exact(fake_db):
 def test_db_exceptions_not_swallowed(fake_db):
     cursor, conn = fake_db(row=ROW, raising=psycopg.OperationalError())
     with pytest.raises(psycopg.OperationalError):
-        CustomerRepository().get_by_id(CUST_ID)
-    assert conn.closed and cursor.closed  # context managers still exited
+        CustomerRepository().get_by_id(conn, CUST_ID)
+    with pytest.raises(psycopg.OperationalError):
+        CustomerRepository().get_by_phone(conn, "+6281234567890")
 
 
-def test_connection_context_exited(fake_db):
+def test_repository_never_commits_rolls_back_or_closes(fake_db):
     cursor, conn = fake_db(row=ROW)
-    CustomerRepository().get_by_id(CUST_ID)
-    assert conn.closed is True
-    assert cursor.closed is True
+    CustomerRepository().get_by_id(conn, CUST_ID)
+    CustomerRepository().get_by_phone(conn, "+6281234567890")
+    assert conn.calls == []  # no commit, no rollback, no close, no BEGIN
+    assert cursor.closed is True  # cursor context still exited
+
+
+def test_repository_module_has_no_connection_factory():
+    # connection injection: the module must never import its own way in
+    assert "get_connection" not in vars(customer_repo)
+    assert "connect" not in vars(customer_repo)

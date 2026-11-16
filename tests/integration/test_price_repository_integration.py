@@ -12,6 +12,8 @@ Safety:
 - Creates one throwaway price list, product, and product price (unique
   code/SKU), never touches existing records. Cleanup deletes its own
   product price first, then price list and product.
+- Every repository call receives the connection from transaction() —
+  the repository itself never opens, commits, or rolls back.
 """
 
 import os
@@ -55,23 +57,24 @@ def test_price_read_roundtrip():
             )
         inserted = True
 
-        by_id = repo.get_price_list_by_id(pl_id)
-        assert isinstance(by_id, PriceListResponse)
-        assert by_id.code == code
+        with transaction() as conn:  # caller-owned read transaction
+            by_id = repo.get_price_list_by_id(conn, pl_id)
+            assert isinstance(by_id, PriceListResponse)
+            assert by_id.code == code
 
-        by_code = repo.get_price_list_by_code(code)
-        assert by_code is not None and by_code.id == pl_id
+            by_code = repo.get_price_list_by_code(conn, code)
+            assert by_code is not None and by_code.id == pl_id
 
-        price = repo.get_product_price(pl_id, prod_id)
-        assert isinstance(price, ProductPriceResponse)
-        assert price.unit_price == Decimal("1234.50")
-        assert price.product_id == prod_id
+            price = repo.get_product_price(conn, pl_id, prod_id)
+            assert isinstance(price, ProductPriceResponse)
+            assert price.unit_price == Decimal("1234.50")
+            assert price.product_id == prod_id
 
-        # unknown lookups
-        assert repo.get_price_list_by_id(uuid4()) is None
-        assert repo.get_price_list_by_code("SMOKE-NO-SUCH-CODE") is None
-        assert repo.get_product_price(uuid4(), prod_id) is None
-        assert repo.get_product_price(pl_id, uuid4()) is None
+            # unknown lookups
+            assert repo.get_price_list_by_id(conn, uuid4()) is None
+            assert repo.get_price_list_by_code(conn, "SMOKE-NO-SUCH-CODE") is None
+            assert repo.get_product_price(conn, uuid4(), prod_id) is None
+            assert repo.get_product_price(conn, pl_id, uuid4()) is None
     finally:
         if inserted:
             with transaction() as conn:  # cleanup own rows only

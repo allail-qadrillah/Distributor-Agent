@@ -2,7 +2,9 @@ from app.schemas.customer import CustomerCreate, CustomerResponse, CustomerUpdat
 from app.schemas.inventory import InventoryResponse
 from app.schemas.order import (
     OrderCreate,
+    OrderDetailResponse,
     OrderItemCreate,
+    OrderItemInsert,
     OrderItemResponse,
     OrderResponse,
     OrderStatus,
@@ -29,7 +31,9 @@ __all__ = [
     "CustomerUpdate",
     "InventoryResponse",
     "OrderCreate",
+    "OrderDetailResponse",
     "OrderItemCreate",
+    "OrderItemInsert",
     "OrderItemResponse",
     "OrderResponse",
     "OrderStatus",

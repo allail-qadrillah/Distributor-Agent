@@ -12,6 +12,8 @@ Safety:
 - Creates exactly one throwaway customer (random code/phone), never reuses
   or modiies existing records, deletes its own row in teardown.
 - Read operations only otherwise. Nothing destructive outside the throwaway row.
+- Every repository call receives the connection from transaction() —
+  the repository itself never opens, commits, or rolls back.
 """
 
 import os
@@ -47,15 +49,16 @@ def test_get_by_id_and_phone_roundtrip():
                 (cust_id, code, "Smoke Test Customer", phone, Decimal("1000.00")),
             )
         inserted = True  # only after the insert transaction committed
-        by_id = repo.get_by_id(cust_id)
-        assert isinstance(by_id, CustomerResponse)
-        assert by_id.phone == phone
-        assert by_id.credit_limit == Decimal("1000.00")
+        with transaction() as conn:  # caller-owned read transaction
+            by_id = repo.get_by_id(conn, cust_id)
+            assert isinstance(by_id, CustomerResponse)
+            assert by_id.phone == phone
+            assert by_id.credit_limit == Decimal("1000.00")
 
-        by_phone = repo.get_by_phone(phone)
-        assert by_phone is not None and by_phone.id == cust_id
+            by_phone = repo.get_by_phone(conn, phone)
+            assert by_phone is not None and by_phone.id == cust_id
 
-        assert repo.get_by_id(uuid4()) is None  # typo-safety: unknown id
+            assert repo.get_by_id(conn, uuid4()) is None  # typo-safety: unknown id
     finally:
         if inserted:
             with transaction() as conn:  # cleanup own row only

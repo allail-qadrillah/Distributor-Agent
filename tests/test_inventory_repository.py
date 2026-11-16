@@ -1,4 +1,8 @@
-"""InventoryRepository unit tests — mocked database access, no live Supabase."""
+"""InventoryRepository unit tests — mocked database access, no live Supabase.
+
+Connection-injection contract is under test: the repository receives the
+caller's connection, uses it, and never manages its lifecycle.
+"""
 
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -6,7 +10,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from app.repositories import inventory as inventory_repo
+import app.repositories.inventory as inventory_repo
 from app.repositories.inventory import InventoryRepository
 from app.schemas.inventory import InventoryResponse
 
@@ -31,6 +35,8 @@ class FakeCursor:
         self.closed = False
 
     def execute(self, sql, params=None):
+        if self.raising:
+            raise self.raising
         self.executed = (sql, params)
 
     def fetchone(self):
@@ -47,27 +53,33 @@ class FakeCursor:
 
 
 class FakeConn:
+    """Caller-supplied connection; records lifecycle calls the repo must not make."""
+
     def __init__(self, cursor):
         self._cursor = cursor
-        self.closed = False
+        self.calls: list[str] = []  # any commit/rollback/close/BEGIN lands here
 
     def cursor(self):
         return self._cursor
 
-    def __enter__(self):
-        return self
+    def commit(self):
+        self.calls.append("commit")
 
-    def __exit__(self, *exc):
-        self.closed = True
-        return False
+    def rollback(self):
+        self.calls.append("rollback")
+
+    def close(self):
+        self.calls.append("close")
+
+    def execute(self, sql, params=None):
+        self.calls.append(f"execute: {sql}")
 
 
 @pytest.fixture
-def fake_db(monkeypatch):
+def fake_db():
     def install(row=None, raising=None):
         cursor = FakeCursor(row=row, raising=raising)
         conn = FakeConn(cursor)
-        monkeypatch.setattr(inventory_repo, "get_connection", lambda: conn)
         return cursor, conn
 
     return install
@@ -75,7 +87,7 @@ def fake_db(monkeypatch):
 
 def test_found_by_product_id(fake_db):
     cursor, conn = fake_db(row=ROW)
-    result = InventoryRepository().get_by_product_id(PROD_ID)
+    result = InventoryRepository().get_by_product_id(conn, PROD_ID)
     assert isinstance(result, InventoryResponse)
     assert result.product_id == PROD_ID
     assert result.on_hand_stock == 100
@@ -83,13 +95,13 @@ def test_found_by_product_id(fake_db):
 
 
 def test_not_found_returns_none(fake_db):
-    fake_db(row=None)
-    assert InventoryRepository().get_by_product_id(uuid4()) is None
+    cursor, conn = fake_db(row=None)
+    assert InventoryRepository().get_by_product_id(conn, uuid4()) is None
 
 
 def test_available_stock_mapped_from_db_value(fake_db):
     cursor, conn = fake_db(row=ROW)
-    result = InventoryRepository().get_by_product_id(PROD_ID)
+    result = InventoryRepository().get_by_product_id(conn, PROD_ID)
     # mapped straight from the row dict — no Python arithmetic
     assert result.available_stock == 75
     sql, _ = cursor.executed
@@ -98,7 +110,7 @@ def test_available_stock_mapped_from_db_value(fake_db):
 
 def test_sql_parameters_passed_separately(fake_db):
     cursor, conn = fake_db(row=ROW)
-    InventoryRepository().get_by_product_id(PROD_ID)
+    InventoryRepository().get_by_product_id(conn, PROD_ID)
     sql, params = cursor.executed
     assert "WHERE product_id = %s" in sql
     assert params == (PROD_ID,)
@@ -111,12 +123,17 @@ def test_sql_parameters_passed_separately(fake_db):
 def test_db_exceptions_propagate(fake_db):
     cursor, conn = fake_db(row=ROW, raising=psycopg.OperationalError())
     with pytest.raises(psycopg.OperationalError):
-        InventoryRepository().get_by_product_id(PROD_ID)
-    assert conn.closed and cursor.closed
+        InventoryRepository().get_by_product_id(conn, PROD_ID)
 
 
-def test_contexts_exit_correctly(fake_db):
+def test_repository_never_commits_rolls_back_or_closes(fake_db):
     cursor, conn = fake_db(row=ROW)
-    InventoryRepository().get_by_product_id(PROD_ID)
-    assert conn.closed is True
-    assert cursor.closed is True
+    InventoryRepository().get_by_product_id(conn, PROD_ID)
+    assert conn.calls == []  # no commit, no rollback, no close, no BEGIN
+    assert cursor.closed is True  # cursor context still exited
+
+
+def test_repository_module_has_no_connection_factory():
+    # connection injection: the module must never import its own way in
+    assert "get_connection" not in vars(inventory_repo)
+    assert "connect" not in vars(inventory_repo)

@@ -8,6 +8,8 @@ order_items.unit_price IS a database column (snapshot), but it is NOT
 part of order input — the backend resolves prices from the customer's
 price list. Clients/LLMs never supply prices. OrderItemResponse returns
 the stored snapshot (unit_price + generated subtotal).
+OrderItemInsert carries the service-resolved unit_price to the
+repository — internal input, never customer-facing.
 """
 
 from datetime import datetime
@@ -18,7 +20,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
-from app.schemas.common import BaseSchema
+from app.schemas.common import BaseSchema, Money
 
 
 class OrderStatus(str, Enum):  # noqa: UP042 -- Preserve Enum string conversion behavior.
@@ -47,6 +49,20 @@ class OrderItemResponse(BaseSchema):
     unit_price: Decimal  # stored snapshot
     subtotal: Decimal  # generated column, never input
     created_at: datetime
+
+
+class OrderItemInsert(BaseSchema):
+    """Internal insert input for order_items — NOT customer-facing.
+
+    OrderItemCreate (customer input) deliberately has no unit_price; the
+    service resolves it from the customer's price list and constructs
+    this type. unit_price is the order-creation snapshot stored in
+    order_items.
+    """
+
+    product_id: UUID
+    quantity: Annotated[int, Field(gt=0)]  # mirrors CHECK (quantity > 0)
+    unit_price: Money  # mirrors numeric(14,2) CHECK (unit_price >= 0)
 
 
 class OrderCreate(BaseSchema):
@@ -84,3 +100,9 @@ class OrderResponse(BaseSchema):
     delivered_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class OrderDetailResponse(OrderResponse):
+    """Order plus its items — read model for get-by-id / detail views."""
+
+    items: list[OrderItemResponse]

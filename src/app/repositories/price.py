@@ -6,11 +6,20 @@ Rules (same conventions as other repositories):
   service layer — this module reads exactly what is stored.
 - Parameterized SQL only; dict_row; model_validate; None for misses;
   exceptions propagate.
+
+Connection injection (same contract as InventoryRepository/OrderRepository):
+- Every method receives the caller's connection and uses it for all
+  operations. This module never opens a connection and never manages
+  transaction lifecycle: no BEGIN, no COMMIT, no ROLLBACK, no close. The
+  caller owns the transaction.
+- The connection must use dict_row (app.database.connection.connect and
+  transaction() provide it).
 """
 
 from uuid import UUID
 
-from app.database.connection import get_connection
+import psycopg
+
 from app.schemas.price_list import PriceListResponse, ProductPriceResponse
 
 _PRICE_LIST_COLUMNS = "id, code, name, is_active, created_at, updated_at"
@@ -29,32 +38,40 @@ _GET_PRODUCT_PRICE = (
 
 
 class PriceRepository:
-    def get_price_list_by_id(self, price_list_id: UUID) -> PriceListResponse | None:
-        """Return the price list with this id, or None."""
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_GET_PRICE_LIST_BY_ID, (price_list_id,))
-                row = cur.fetchone()
+    def get_price_list_by_id(
+        self, conn: psycopg.Connection, price_list_id: UUID
+    ) -> PriceListResponse | None:
+        """Return the price list with this id, or None.
+
+        No commit/rollback: the caller owns the transaction.
+        """
+        with conn.cursor() as cur:
+            cur.execute(_GET_PRICE_LIST_BY_ID, (price_list_id,))
+            row = cur.fetchone()
         return PriceListResponse.model_validate(row) if row else None
 
-    def get_price_list_by_code(self, code: str) -> PriceListResponse | None:
-        """Return the price list with this exact code, or None."""
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_GET_PRICE_LIST_BY_CODE, (code,))
-                row = cur.fetchone()
+    def get_price_list_by_code(
+        self, conn: psycopg.Connection, code: str
+    ) -> PriceListResponse | None:
+        """Return the price list with this exact code, or None.
+
+        No commit/rollback: the caller owns the transaction.
+        """
+        with conn.cursor() as cur:
+            cur.execute(_GET_PRICE_LIST_BY_CODE, (code,))
+            row = cur.fetchone()
         return PriceListResponse.model_validate(row) if row else None
 
     def get_product_price(
-        self, price_list_id: UUID, product_id: UUID
+        self, conn: psycopg.Connection, price_list_id: UUID, product_id: UUID
     ) -> ProductPriceResponse | None:
         """Return the price of a product in a price list, or None.
 
         Exact (price_list_id, product_id) match — mirrors the
         product_prices UNIQUE constraint. No fallback logic here.
+        No commit/rollback: the caller owns the transaction.
         """
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_GET_PRODUCT_PRICE, (price_list_id, product_id))
-                row = cur.fetchone()
+        with conn.cursor() as cur:
+            cur.execute(_GET_PRODUCT_PRICE, (price_list_id, product_id))
+            row = cur.fetchone()
         return ProductPriceResponse.model_validate(row) if row else None
