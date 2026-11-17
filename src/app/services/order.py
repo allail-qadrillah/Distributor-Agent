@@ -1,7 +1,7 @@
-"""Order service — business workflows for the order lifecycle.
+"""Order service, business workflows for the order lifecycle.
 
 Current workflows: create_draft_order, confirm_order. Cancellation,
-delivery, and payment are separate future workflows — none of them
+delivery, and payment are separate future workflows, none of them
 belongs here.
 
 Rules:
@@ -10,7 +10,7 @@ Rules:
 - One transaction() per workflow: every repository call receives the
   same connection; commit happens only after all steps succeed; any
   failure rolls back the complete workflow. Commit, rollback, and
-  connection lifecycle stay in app.database.connection — never here.
+  connection lifecycle stay in app.database.connection, never here.
 - Backend-resolved prices only: OrderCreate carries no prices; the
   unit_price snapshot comes from the customer's price list.
 - Draft orders are side-effect free: no inventory reservation, no
@@ -100,7 +100,7 @@ class OrderService:
                 conn, order
             )  # status: DB default 'draft'
             stored_items = self._orders.create_order_items(conn, created.id, items)
-            # Decimal sum of database-generated subtotals — no float, no
+            # Decimal sum of database-generated subtotals, no float, no
             # Python-computed subtotals.
             total = sum((item.subtotal for item in stored_items), Decimal("0.00"))
             if self._orders.update_total_amount(conn, created.id, total) is None:
@@ -115,7 +115,7 @@ class OrderService:
         """Confirm a draft order: credit check, stock reservation, transition.
 
         One transaction with pessimistic locking in the migration 001
-        order — customer row first (serializes credit checks for the
+        order, customer row first (serializes credit checks for the
         same customer across orders), then the order row (re-read under
         lock; must still be draft), then all inventory rows in ascending
         product_id (serializes stock reservation across customers). Any
@@ -159,6 +159,20 @@ class OrderService:
                 raise OrderNotFoundError(order_id)
             return detail
 
+    def get_order(self, order_id: UUID) -> OrderDetailResponse:
+        """Read one order with its items, whatever its status.
+
+        Read workflow for callers that must inspect an order before
+        acting, the agent tool layer verifies draft ownership this way
+        before requesting confirmation. Read-only: one snapshot
+        transaction, no locks, no writes.
+        """
+        with transaction() as conn:
+            detail = self._orders.get_by_id(conn, order_id)
+            if detail is None:
+                raise OrderNotFoundError(order_id)
+            return detail
+
     def _validate_credit(
         self,
         conn: psycopg.Connection,
@@ -181,7 +195,7 @@ class OrderService:
     def _reserve_inventory(
         self, conn: psycopg.Connection, order: OrderDetailResponse
     ) -> None:
-        """Lock, validate, then reserve — all items or none.
+        """Lock, validate, then reserve, all items or none.
 
         Locks are acquired in ascending product_id (migration 001
         deadlock-avoidance order); every item is validated against the

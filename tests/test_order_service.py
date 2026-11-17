@@ -1298,3 +1298,29 @@ def test_confirm_order_customer_only_read_balance_never_mutated(tx):
     # no write methods, and the only recorded call is the lock read
     assert customers.calls == [("get_for_update", tx.conn, CUSTOMER_ID)]
     assert tx.journal == ["commit"]
+
+
+# ---------------------------------------------------------------------------
+# get_order: read workflow (agent tool layer ownership check)
+# ---------------------------------------------------------------------------
+
+
+def test_get_order_returns_detail(tx):
+    customers, products, prices, orders, inventory = _world()
+    result = OrderService(customers, products, prices, orders, inventory).get_order(
+        ORDER_ID
+    )
+
+    assert result == orders.detail  # same snapshot the repository returned
+    assert _names(orders) == ["get_by_id"]
+    assert orders.calls[0][1] is tx.conn
+    assert tx.journal == ["commit"]  # read-only snapshot transaction
+
+
+def test_get_order_missing_raises_order_not_found(tx):
+    customers, products, prices, orders, inventory = _world(
+        orders=FakeOrderRepository(detail=None)
+    )
+    with pytest.raises(OrderNotFoundError):
+        OrderService(customers, products, prices, orders, inventory).get_order(ORDER_ID)
+    assert tx.journal == ["rollback"]
