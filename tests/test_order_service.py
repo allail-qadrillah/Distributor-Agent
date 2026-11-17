@@ -45,7 +45,8 @@ from app.services.exceptions import (
     ProductNotFoundError,
     ProductPriceNotFoundError,
 )
-from app.services.order import GENERAL_PRICE_LIST_CODE, OrderService
+from app.services.order import OrderService
+from app.services.price_list_resolver import GENERAL_PRICE_LIST_CODE
 
 NOW = datetime.now(UTC)
 CUSTOMER_ID = uuid4()

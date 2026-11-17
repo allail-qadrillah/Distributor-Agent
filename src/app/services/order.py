@@ -56,13 +56,10 @@ from app.services.exceptions import (
     InventoryNotFoundError,
     OrderNotFoundError,
     OrderTotalUpdateError,
-    PriceListNotFoundError,
     ProductNotFoundError,
     ProductPriceNotFoundError,
 )
-
-# customers.price_list_id NULL => this list (migration 001 seed row)
-GENERAL_PRICE_LIST_CODE = "GENERAL"
+from app.services.price_list_resolver import resolve_price_list
 
 
 class OrderService:
@@ -96,7 +93,7 @@ class OrderService:
         """
         with transaction() as conn:
             customer = self._require_active_customer(conn, order.customer_id)
-            price_list = self._resolve_price_list(conn, customer)
+            price_list = resolve_price_list(conn, self._prices, customer)
             items = self._resolve_items(conn, order, price_list)
 
             created = self._orders.create_order(
@@ -220,23 +217,6 @@ class OrderService:
         if not customer.is_active:
             raise InactiveCustomerError(customer_id)
         return customer
-
-    def _resolve_price_list(
-        self, conn: psycopg.Connection, customer: CustomerResponse
-    ) -> PriceListResponse:
-        # customer's own list when assigned, GENERAL otherwise — never
-        # anything derived from order input.
-        if customer.price_list_id is not None:
-            price_list = self._prices.get_price_list_by_id(conn, customer.price_list_id)
-            source: UUID | str = customer.price_list_id
-        else:
-            price_list = self._prices.get_price_list_by_code(
-                conn, GENERAL_PRICE_LIST_CODE
-            )
-            source = GENERAL_PRICE_LIST_CODE
-        if price_list is None:
-            raise PriceListNotFoundError(source)
-        return price_list
 
     def _resolve_items(
         self,

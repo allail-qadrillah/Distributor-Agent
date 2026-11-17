@@ -2,6 +2,7 @@
 
 ## Active
 
+- [x] ProductInquiryService (shared `price_list_resolver`, `ProductRepository.search_by_exact_sku`, `product_inquiry` schemas, unit and integration tests) completed and verified 2026-11-17.
 - [ ] Add service-layer workflows for order lifecycle transitions: cancellation and delivery (draft creation and confirmation are done).
 - [ ] Add API routers for customer, product, inventory, price, credit, and order operations.
 - [ ] Add the OpenAI tool and agent layers after core operations are stable.
@@ -16,11 +17,14 @@
 
 ## Current verification
 
-- `uv run pytest -q --ignore=tests/integration` → 147 passed (2026-11-16, before the migration 002 change; full regression after it deferred to the next milestone).
-- Targeted verification after the migration 002 change (2026-11-16): `uv run pytest tests/test_schemas.py tests/test_customer_repository.py tests/test_order_service.py` → 84 passed, and `RUN_DB_SMOKE=1` targeted integration (customer NULL/zero credit-limit round-trip, order confirm with NULL and zero limit) passed on the live DB with 0 leaked rows.
-- `uv run ruff check src tests` passes and `uv run ruff format --check src tests` reports 44 files already formatted (2026-11-16).
-- `RUN_DB_SMOKE=1 uv run pytest tests/integration` → 19 passed: customer, inventory, order (repository and service, draft and confirm), price, and product integration tests. The order-service integration test includes a two-thread confirmation race on one customer's drafts where exactly one confirms and the other raises `CreditLimitExceededError` (2026-11-16, live database, throwaway rows cleaned up).
+- `uv run pytest -q --ignore=tests/integration` → 174 passed (2026-11-17, includes the Product Inquiry unit suite).
+- `RUN_DB_SMOKE=1 uv run pytest tests/integration` → 30 passed (2026-11-17, live database, throwaway rows cleaned up; includes the Product Inquiry integration suite and the OrderService suite re-run after the resolver extraction).
+- `uv run ruff check src tests` and `uv run ruff format --check src tests` pass (2026-11-17).
 
 ## Working-tree note
 
-The working tree has uncommitted changes: the OrderService draft-creation and confirm-order implementations are complete and verified but uncommitted, awaiting review (`src/app/services/order.py`, `src/app/services/exceptions.py`, `src/app/repositories/customer.py`, `src/app/repositories/inventory.py`, `src/app/repositories/order.py`, and their tests). The migration 002 credit-limit alignment is also uncommitted and verified: untracked `src/app/database/migrations/002_credit_limit_nullable.sql` and `supabase/migrations/20261116000000_credit_limit_nullable.sql`, modified `src/app/schemas/customer.py`, a comment-only change in `src/app/services/order.py`, related test updates, and these docs. There is also a pre-existing unrelated user change to `src/app/config.py` and an untracked `.audit/` folder. Review and commit separately.
+The order-draft and confirm-order work and migration 002 were committed in `e8ed8d1`. The remaining uncommitted changes are the Product Inquiry implementation (resolver, service, repository method, schemas, tests, docs) plus pre-existing line-ending-only modifications to `AGENTS.md` and `src/app/config.py` (the `.audit/` folder is gitignored, not untracked, and currently empty). Review and commit separately.
+
+## Incident note (2026-11-17)
+
+An early revision of the Product Inquiry integration test deleted the seeded GENERAL price list row during cleanup (it passed the GENERAL id into the throwaway-list delete). The row was restored from the migration 001 seed INSERT and the test now guards the seed row with an explicit post-cleanup assertion. OrderService integration tests re-run green afterwards.

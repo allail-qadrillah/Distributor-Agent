@@ -54,7 +54,8 @@ from app.services.exceptions import (
     InventoryNotFoundError,
     ProductPriceNotFoundError,
 )
-from app.services.order import GENERAL_PRICE_LIST_CODE, OrderService
+from app.services.order import OrderService
+from app.services.price_list_resolver import GENERAL_PRICE_LIST_CODE
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_DB_SMOKE") != "1",

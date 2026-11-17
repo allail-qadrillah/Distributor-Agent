@@ -123,6 +123,44 @@ def test_get_by_sku_not_found(fake_db):
     assert ProductRepository().get_by_sku(conn, "NOPE") is None
 
 
+def test_search_by_exact_sku_found(fake_db):
+    cursor, conn = fake_db(rows=[PROD_ROW])
+    results = ProductRepository().search_by_exact_sku(conn, "aqua-600ml")
+    assert [r.sku for r in results] == ["AQUA-600ML"]
+    sql, params = cursor.executed
+    # exact match: no % wildcards, term passed as parameter
+    assert "lower(p.sku) = lower(%s)" in sql
+    assert params == ("aqua-600ml",)
+
+
+def test_search_by_exact_sku_not_found(fake_db):
+    cursor, conn = fake_db(rows=[])
+    assert ProductRepository().search_by_exact_sku(conn, "NOPE") == []
+
+
+def test_search_by_exact_sku_excludes_inactive(fake_db):
+    cursor, conn = fake_db(rows=[])
+    ProductRepository().search_by_exact_sku(conn, "AQUA-600ML")
+    sql, _ = cursor.executed
+    assert "p.is_active = true" in sql
+
+
+def test_search_by_exact_sku_case_folding_is_databases(fake_db):
+    cursor, conn = fake_db(rows=[])
+    ProductRepository().search_by_exact_sku(conn, "AQUA-600ML")
+    # term not pre-lowered in Python: lower() runs in SQL on both sides
+    _, params = cursor.executed
+    assert params[0] == "AQUA-600ML"
+
+
+def test_search_by_exact_sku_never_touches_get_by_sku_path(fake_db):
+    cursor, conn = fake_db(rows=[PROD_ROW])
+    ProductRepository().search_by_exact_sku(conn, "AQUA-600ML")
+    sql, _ = cursor.executed
+    assert "WHERE sku = %s" not in sql  # get_by_sku SQL stays case-sensitive
+    assert "ILIKE" not in sql  # exact, never partial
+
+
 def _search_sql(cursor, query: str) -> str:
     sql, params = cursor.executed
     assert params == (f"%{query}%", f"%{query}%")  # same pattern for name and alias
@@ -203,6 +241,9 @@ def test_repository_never_commits_rolls_back_or_closes(fake_db):
 
     cursor, conn = fake_db(rows=[PROD_ROW])
     ProductRepository().search_by_name_or_alias(conn, "Aqua")
+
+    _, conn = fake_db(rows=[PROD_ROW])
+    ProductRepository().search_by_exact_sku(conn, "AQUA-600ML")
 
     assert conn.calls == []  # no commit, no rollback, no close, no BEGIN
     assert cursor.closed is True  # cursor context still exited

@@ -12,12 +12,12 @@ The current domain includes customer, product, inventory, price, credit, and ord
 - `src/app/schemas` contains Pydantic request and response models.
 - `src/app/database/connection.py` owns Psycopg connection and transaction lifecycle; callers wrap multi-statement work in `transaction()`.
 - `src/app/repositories` contains database access for customer, product, inventory, price, and order records. Every public repository method takes `conn: psycopg.Connection` as first argument after `self`, and the supplied connection must use `dict_row`. Repositories own SQL execution and cursor lifecycle only; they never open or close connections or manage transactions.
-- `src/app/services` contains the service layer with `OrderService` (draft creation and confirmation); `src/app/services/exceptions.py` holds domain exceptions. `src/app/tools` and `src/app/agents` are package placeholders and not implemented yet.
+- `src/app/services` contains the service layer with `OrderService` (draft creation and confirmation) and `ProductInquiryService` (read-only product search with customer-specific pricing and stock); `src/app/services/exceptions.py` holds domain exceptions; `src/app/services/price_list_resolver.py` holds the shared price-list resolution rule (assigned list or GENERAL). `src/app/tools` and `src/app/agents` are package placeholders and not implemented yet.
 - Migrations define the database schema and database-enforced business constraints: `supabase/migrations/20261111000000_initial_schema.sql` (001, immutable, applied) and `supabase/migrations/20261116000000_credit_limit_nullable.sql` (002, applied — `customers.credit_limit` nullable, no default). Each migration is stored twice with identical content: `src/app/database/migrations/NNN_name.sql` and `supabase/migrations/YYYYMMDDHHMMSS_name.sql`. There is no migration runner; migrations are applied manually by executing the SQL (e.g. `psql -f`).
 
 ## Dependency direction
 
-The intended direction is `api → tools → services → repositories → database`, as documented in `README.md`. Current code covers repositories, database access, and the order-draft and order-confirmation service workflows. No API layer exists yet, so no production caller constructs `OrderService`. Keep business rules in services.
+The intended direction is `api → tools → services → repositories → database`, as documented in `README.md`. Current code covers repositories, database access, and the order-draft, order-confirmation, and product-inquiry service workflows. No API layer exists yet, so no production caller constructs `OrderService` or `ProductInquiryService`. Keep business rules in services.
 
 ## Commands
 

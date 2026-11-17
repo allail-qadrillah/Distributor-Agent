@@ -28,6 +28,16 @@ from app.schemas.product import ProductResponse
 _COLUMNS = "p.id, p.sku, p.name, p.unit, p.is_active, p.created_at, p.updated_at"
 _GET_BY_ID = f"SELECT {_COLUMNS.replace('p.', '')} FROM products WHERE id = %s"
 _GET_BY_SKU = f"SELECT {_COLUMNS.replace('p.', '')} FROM products WHERE sku = %s"
+# Exact case-insensitive SKU match, active products only. lower() on both
+# sides (never pre-lowered in Python): case folding is the database's job.
+# products.sku UNIQUE is case-sensitive, so different casings are distinct
+# rows and can all match — hence fetchall and a list return.
+_SEARCH_BY_EXACT_SKU = f"""
+SELECT {_COLUMNS}
+FROM products p
+WHERE p.is_active = true AND lower(p.sku) = lower(%s)
+ORDER BY p.sku
+"""
 # DISTINCT: one row per product even if name AND several aliases match.
 # LEFT JOIN: name-only matches still returned for products without aliases.
 # ILIKE + ESCAPE: case-insensitive partial match with escaped wildcards.
@@ -62,12 +72,31 @@ class ProductRepository:
     def get_by_sku(self, conn: psycopg.Connection, sku: str) -> ProductResponse | None:
         """Return the product with this exact sku, or None.
 
-        No commit/rollback: the caller owns the transaction.
+        Case-sensitive equality (products.sku UNIQUE), any is_active
+        value. No commit/rollback: the caller owns the transaction.
         """
         with conn.cursor() as cur:
             cur.execute(_GET_BY_SKU, (sku,))
             row = cur.fetchone()
         return ProductResponse.model_validate(row) if row else None
+
+    def search_by_exact_sku(
+        self, conn: psycopg.Connection, sku: str
+    ) -> list[ProductResponse]:
+        """Return active products whose sku matches exactly, or [].
+
+        Case-insensitive exact match (lower(sku) = lower(input)): no
+        partial matching, no wildcards. Active products only — the
+        inactive filter is deliberately stricter than get_by_sku because
+        lookups for customer-facing search must not surface them.
+        Multiple rows only when distinct SKUs differ in casing (the
+        UNIQUE constraint is case-sensitive). No commit/rollback: the
+        caller owns the transaction.
+        """
+        with conn.cursor() as cur:
+            cur.execute(_SEARCH_BY_EXACT_SKU, (sku,))
+            rows = cur.fetchall()
+        return [ProductResponse.model_validate(row) for row in rows]
 
     def search_by_name_or_alias(
         self, conn: psycopg.Connection, query: str

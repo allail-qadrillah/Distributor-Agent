@@ -1,5 +1,11 @@
 # Decisions
 
+## 2026-11-17
+
+- Shared price-list resolution lives in `src/app/services/price_list_resolver.py` (`resolve_price_list` + `GENERAL_PRICE_LIST_CODE`): assigned list when `customers.price_list_id` is set, GENERAL otherwise. `OrderService` and `ProductInquiryService` resolve identically inside their own `transaction()`. The resolver does SQL-free orchestration only — it takes the caller's connection and `PriceRepository`; product-price fallback (GENERAL when a product misses the customer's list) is deliberately absent and stays a per-service `ProductPriceNotFoundError`.
+- Product search policy (Product Inquiry): exact case-insensitive SKU match (`ProductRepository.search_by_exact_sku`, active products only) takes priority and short-circuits the broader `search_by_name_or_alias` partial search; all matching candidates are returned, never an arbitrary first pick. `get_by_sku` stays case-sensitive exact single-row lookup for other callers.
+- Product Inquiry is read-only: one `transaction()` gives a consistent snapshot (customer, price list, prices, inventory) but writes nothing; no stock reservation. Missing data is an error, not a default — missing price raises `ProductPriceNotFoundError`, missing inventory row raises `InventoryNotFoundError` (never zero stock); an existing zero `available_stock` is a legitimate answer.
+
 ## 2026-11-16
 
 - Keep project memory split by purpose. `AGENTS.md` contains mandatory agent rules, `docs/PROJECT_CONTEXT.md` contains stable facts, `docs/DECISIONS.md` contains durable choices, and `docs/TASKS.md` contains active work state.

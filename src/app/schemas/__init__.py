@@ -24,6 +24,11 @@ from app.schemas.product import (
     ProductResponse,
     ProductUpdate,
 )
+from app.schemas.product_inquiry import (
+    ProductInquiryItem,
+    ProductInquiryRequest,
+    ProductInquiryResponse,
+)
 
 __all__ = [
     "CustomerCreate",
@@ -43,6 +48,9 @@ __all__ = [
     "ProductAliasCreate",
     "ProductAliasResponse",
     "ProductCreate",
+    "ProductInquiryItem",
+    "ProductInquiryRequest",
+    "ProductInquiryResponse",
     "ProductPriceCreate",
     "ProductPriceResponse",
     "ProductPriceUpdate",
