@@ -35,6 +35,7 @@ from app.services.exceptions import (
     InvalidOrderStatusError,
     InventoryNotFoundError,
     OrderNotFoundError,
+    OrderTotalUpdateError,
     PriceListNotFoundError,
     ProductNotFoundError,
     ProductPriceNotFoundError,
@@ -104,20 +105,22 @@ def execute_confirm_order(
 ) -> dict:
     """confirm_order → OrderService.confirm_order (guarded twice).
 
-    Guard 1: trusted explicit approval, context.confirm_order_approved
-    is set ONLY by application logic (ToolContext.with_confirm_order_
-    approval()); the model has no argument path to it.
+    Guard 1: trusted explicit approval, the user approved exactly ONE
+    order (context.approved_order_id, set only by application logic
+    via ToolContext.with_confirm_order_approval()); confirming a
+    different order, even the same customer's, is refused.
     Guard 2: ownership, the draft must belong to the trusted customer.
     customer_id is immutable on an order row, so the read-then-confirm
     sequence cannot be raced into confirming another customer's order;
     status races are impossible inside confirm_order's own guarded
     transition.
     """
-    if not context.confirm_order_approved:
+    if context.approved_order_id is None or context.approved_order_id != args.order_id:
         raise ToolHandlerError(
             "unauthorized",
             "Konfirmasi pesanan membutuhkan persetujuan eksplisit pelanggan "
-            "terlebih dahulu. Konfirmasi tidak dijalankan.",
+            "untuk pesanan ini terlebih dahulu. Konfirmasi tidak dijalankan.",
+            {"order_id": str(args.order_id)},
         )
     draft = services.orders.get_order(args.order_id)
     if draft.customer_id != context.customer_id:
@@ -227,6 +230,15 @@ def map_service_error(exc: ServiceError) -> ToolHandlerError:
         return ToolHandlerError(
             "business_rule",
             "Pesanan tidak memiliki item untuk dikonfirmasi.",
+            {"order_id": str(exc.order_id)},
+        )
+    if isinstance(exc, OrderTotalUpdateError):
+        # internal consistency failure inside the confirm transaction:
+        # relayable as a generic failure, but explicitly mapped so a new
+        # subclass can never fall through the fallback silently
+        return ToolHandlerError(
+            "execution_error",
+            "Pembaruan total pesanan gagal.",
             {"order_id": str(exc.order_id)},
         )
     if isinstance(exc, CreditLimitNotConfiguredError):

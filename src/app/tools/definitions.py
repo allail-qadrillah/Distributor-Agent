@@ -121,6 +121,7 @@ CREATE_DRAFT_ORDER_TOOL = ToolDefinition(
                         "quantity": {
                             "type": "integer",
                             "minimum": 1,
+                            "maximum": 2147483647,
                             "description": "Jumlah yang dipesan (unit terkecil).",
                         },
                     },

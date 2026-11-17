@@ -22,7 +22,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.agents.orchestrator import AgentOrchestrator
 from app.agents.schemas import AgentInput, AgentMessage, AgentResponse, AgentToolCall
@@ -201,9 +201,9 @@ def _agent(inquiry, orders, script) -> tuple[AgentOrchestrator, ScriptedProvider
     return AgentOrchestrator(provider, executor), provider
 
 
-def _context(approved: bool = False) -> ToolContext:
+def _context(approved: UUID | None = None) -> ToolContext:
     context = ToolContext(customer_id=CUSTOMER_ID, conversation_id="wa-42")
-    return context.with_confirm_order_approval() if approved else context
+    return context.with_confirm_order_approval(approved) if approved else context
 
 
 def _user(text: str) -> AgentMessage:
@@ -246,7 +246,7 @@ def test_full_order_lifecycle_across_three_runs():
     run2 = agent.run(_input_history(*run1.transcript, _user("pesan 10 ya")), _context())
     run3 = agent.run(
         _input_history(*run2.transcript, _user("ya, konfirmasi pesanannya")),
-        _context(approved=True),
+        _context(approved=ORDER_ID),
     )
 
     # search used the trusted identity, never model arguments
@@ -266,9 +266,10 @@ def test_full_order_lifecycle_across_three_runs():
     assert confirm_result["ok"] is True
     assert confirm_result["data"]["status"] == "confirmed"
 
-    # final transcript: 3 user turns, 3 tool exchanges, replayable
+    # final transcript: 3 user turns, 3 tool exchanges, 3 assistant
+    # answers, replayable (the model sees its own previous answers)
     roles = [m.role for m in run3.transcript]
-    assert roles == ["user", "assistant", "tool"] * 3
+    assert roles == ["user", "assistant", "tool", "assistant"] * 3
     assert run3.final_text == "Pesanan ORD-00000042 terkonfirmasi."
 
     # observability: one successful confirm event with no error category
@@ -337,7 +338,7 @@ def test_confirmation_of_foreign_draft_is_refused():
         orders,
         script=[_confirm_call(), _text("Pesanan tidak dapat diproses.")],
     )
-    agent.run(_input_history(_user("konfirmasi")), _context(approved=True))
+    agent.run(_input_history(_user("konfirmasi")), _context(approved=ORDER_ID))
 
     assert orders.get_order_ids == [ORDER_ID]  # ownership WAS checked
     assert orders.confirm_ids == []  # and confirmation never ran
@@ -363,7 +364,11 @@ def test_confirmation_of_fabricated_order_id_is_not_found():
             _text("Pesanan tidak ditemukan."),
         ],
     )
-    agent.run(_input_history(_user("konfirmasi pesanan xyz")), _context(approved=True))
+    # approval names the fabricated order: a stale/deleted id the
+    # application once saw, so the not_found path is exercised honestly
+    agent.run(
+        _input_history(_user("konfirmasi pesanan xyz")), _context(approved=fabricated)
+    )
 
     assert orders.get_order_ids == [fabricated]
     assert orders.confirm_ids == []
@@ -390,7 +395,9 @@ def test_insufficient_stock_failure_is_fed_back_and_confirmed_once():
             _text("Maaf, stok tidak mencukupi untuk pesanan ini."),
         ],
     )
-    result = agent.run(_input_history(_user("ya, konfirmasi")), _context(approved=True))
+    result = agent.run(
+        _input_history(_user("ya, konfirmasi")), _context(approved=ORDER_ID)
+    )
 
     assert orders.confirm_ids == [ORDER_ID]  # the service was asked once
     failure = _tool_message_provider_saw(provider, 1)

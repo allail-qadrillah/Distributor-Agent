@@ -6,11 +6,23 @@ them to user-safe responses. Every provider failure carries the
 provider's error code and request_id for logging, never the API key.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.agents.schemas import AgentMessage, AgentRunEvent
 
 
 class AgentError(Exception):
-    """Base for all agent-layer failures."""
+    """Base for all agent-layer failures.
+
+    The orchestrator attaches partial_transcript and partial_events when
+    a run fails after tool exchanges may have committed side effects, so
+    the caller can persist the conversation and avoid retrying those
+    effects blind. Both stay None for failures before any work.
+    """
+
+    partial_transcript: "list[AgentMessage] | None" = None
+    partial_events: "list[AgentRunEvent] | None" = None
 
 
 class AgentConfigurationError(AgentError):

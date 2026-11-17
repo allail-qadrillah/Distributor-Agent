@@ -16,6 +16,7 @@ import pytest
 import app.agents.orchestrator as orchestrator_module
 from app.agents.exceptions import (
     AgentAuthenticationError,
+    AgentProviderUnavailableError,
     AgentRoundLimitError,
     AgentToolCallLimitError,
 )
@@ -139,7 +140,9 @@ def test_text_only_run_makes_one_provider_call_and_no_executions():
     assert result.response_id == "chatcmpl-1"
     assert len(provider.calls) == 1
     assert executor.executions == []
-    assert result.transcript == [_user("Halo")]
+    # transcript ends with the assistant's own text turn (replayable)
+    assert [m.role for m in result.transcript] == ["user", "assistant"]
+    assert result.transcript[-1].content == "Harga sesuai daftar."
 
 
 def test_provider_receives_instructions_tools_and_history():
@@ -189,9 +192,16 @@ def test_one_tool_round_executes_and_feeds_result_back():
     payload = json.loads(tool_turn.content)
     assert payload["ok"] is True
     assert payload["data"]["products"][0]["sku"] == "AQUA600"
-    # final answer and transcript carry the whole exchange
+    # final answer and transcript carry the whole exchange, including
+    # the final assistant text turn (replay: the model sees its answer)
     assert result.final_text == "Harga sesuai daftar."
-    assert [m.role for m in result.transcript] == ["user", "assistant", "tool"]
+    assert [m.role for m in result.transcript] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert result.transcript[-1].content == "Harga sesuai daftar."
     # instructions are re-sent every round but never enter the transcript
     assert all(m.role != "system" for m in result.transcript)
 
@@ -217,7 +227,13 @@ def test_multiple_tool_calls_pair_results_by_id():
         _input(_user("Cek dua produk")), _context()
     )
     assert [e[0] for e in executor.executions] == ["call_1", "call_2"]
-    assert [m.role for m in result.transcript] == ["user", "assistant", "tool", "tool"]
+    assert [m.role for m in result.transcript] == [
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+    ]
     tool_ids = [m.tool_call_id for m in result.transcript if m.role == "tool"]
     assert tool_ids == ["call_1", "call_2"]  # ids match their results
 
@@ -245,14 +261,48 @@ def test_round_limit_raises_instead_of_inventing_an_answer():
     assert excinfo.value.max_rounds == 2
     assert len(provider.calls) == 2  # exactly the bound, no extra call
     assert len(executor.executions) == 2
+    # the failed run hands its partial exchange to the caller
+    assert [m.role for m in excinfo.value.partial_transcript] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert [e.kind for e in excinfo.value.partial_events] == [
+        "provider_call",
+        "tool_execution",
+        "provider_call",
+        "tool_execution",
+    ]
+
+
+def test_provider_failure_after_tool_carries_partial_transcript():
+    # a draft may already be committed when the provider dies: the
+    # caller needs the partial transcript to persist and not retry blind
+    provider = FakeProvider([TOOL_RESPONSE, AgentProviderUnavailableError("down")])
+    executor = FakeToolExecutor({"call_1": _search_result("call_1")})
+    with pytest.raises(AgentProviderUnavailableError) as excinfo:
+        AgentOrchestrator(provider, executor).run(_input(_user("Cek Aqua")), _context())
+    assert [m.role for m in excinfo.value.partial_transcript] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert [e.kind for e in excinfo.value.partial_events] == [
+        "provider_call",
+        "tool_execution",
+    ]
 
 
 def test_provider_errors_propagate_unchanged():
     provider = FakeProvider([AgentAuthenticationError("bad key", code="x")])
-    with pytest.raises(AgentAuthenticationError):
+    with pytest.raises(AgentAuthenticationError) as excinfo:
         AgentOrchestrator(provider, FakeToolExecutor()).run(
             _input(_user("Halo")), _context()
         )
+    assert excinfo.value.partial_transcript is None  # nothing ran yet
+    assert excinfo.value.partial_events is None
 
 
 def test_history_with_prior_tool_exchange_replays():
@@ -472,6 +522,17 @@ def test_assistant_empty_tool_calls_rejected():
         AgentMessage(role="assistant", tool_calls=[])
 
 
+def test_assistant_duplicate_tool_call_ids_rejected():
+    with pytest.raises(ValueError, match="unique ids"):
+        AgentMessage(
+            role="assistant",
+            tool_calls=[
+                AgentToolCall(id="c1", name="f", arguments="{}"),
+                AgentToolCall(id="c1", name="f", arguments="{}"),
+            ],
+        )
+
+
 def test_user_message_cannot_carry_tool_fields():
     with pytest.raises(ValueError, match="tool fields"):
         AgentMessage(role="user", content="hai", tool_call_id="c1")
@@ -517,6 +578,52 @@ def test_input_requires_last_message_to_be_user():
 def test_input_rejects_blank_message_content():
     with pytest.raises(ValueError):
         AgentMessage(role="user", content="   ")
+
+
+def _tool_exchange() -> list[AgentMessage]:
+    return [
+        AgentMessage(
+            role="assistant",
+            tool_calls=[AgentToolCall(id="c1", name="f", arguments="{}")],
+        ),
+        AgentMessage(role="tool", tool_call_id="c1", content='{"ok": true}'),
+    ]
+
+
+def test_input_accepts_well_paired_tool_history():
+    AgentInput(messages=[_user("Cek"), *_tool_exchange(), _user("Lanjut")])
+
+
+def test_input_rejects_orphan_tool_result():
+    with pytest.raises(ValueError, match="no preceding assistant"):
+        AgentInput(messages=[_user("Cek"), _tool_exchange()[1], _user("Lanjut")])
+
+
+def test_input_rejects_tool_result_with_unknown_id():
+    stray = AgentMessage(role="tool", tool_call_id="c9", content='{"ok": true}')
+    with pytest.raises(ValueError, match="does not match a pending tool call"):
+        AgentInput(messages=[_user("Cek"), _tool_exchange()[0], stray, _user("Lanjut")])
+
+
+def test_input_rejects_missing_tool_results():
+    # the assistant turn was never answered: next turn arrives too early
+    with pytest.raises(ValueError, match="complete a tool-call turn"):
+        AgentInput(messages=[_user("Cek"), _tool_exchange()[0], _user("Lanjut")])
+
+
+def test_input_rejects_duplicate_tool_result_for_one_call():
+    # the first result completes c1; the replayed duplicate arrives with
+    # no pending tool call to answer
+    with pytest.raises(ValueError, match="no preceding assistant"):
+        AgentInput(
+            messages=[
+                _user("Cek"),
+                _tool_exchange()[0],
+                _tool_exchange()[1],
+                _tool_exchange()[1],
+                _user("Lanjut"),
+            ]
+        )
 
 
 # ---------------------------------------------------------------------------

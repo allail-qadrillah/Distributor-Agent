@@ -12,6 +12,7 @@ import uuid
 import pytest
 
 from app.tools.arguments import (
+    ARGUMENT_MODELS,
     ConfirmOrderArgs,
     CreateDraftOrderArgs,
     DraftOrderItemArgs,
@@ -26,6 +27,7 @@ from app.tools.definitions import (
     SEARCH_PRODUCTS_TOOL,
 )
 from app.tools.exceptions import UnknownToolError
+from app.tools.registry import build_default_registry
 
 PRODUCT_ID = str(uuid.uuid4())
 ORDER_ID = str(uuid.uuid4())
@@ -117,6 +119,19 @@ def test_bad_uuid_rejected():
 @pytest.mark.parametrize("quantity", [0, -1, 1.5], ids=["zero", "negative", "float"])
 def test_non_positive_quantity_rejected(quantity):
     raw = json.dumps({"items": [{"product_id": PRODUCT_ID, "quantity": quantity}]})
+    with pytest.raises(InvalidToolArgumentsError):
+        parse_tool_arguments("create_draft_order", raw)
+
+
+def test_quantity_at_int32_maximum_accepted():
+    raw = json.dumps({"items": [{"product_id": PRODUCT_ID, "quantity": 2147483647}]})
+    args = parse_tool_arguments("create_draft_order", raw)
+    assert args.items[0].quantity == 2147483647
+
+
+def test_quantity_above_int32_maximum_rejected():
+    # PostgreSQL INTEGER ceiling: refuse at the boundary, not at insert
+    raw = json.dumps({"items": [{"product_id": PRODUCT_ID, "quantity": 2147483648}]})
     with pytest.raises(InvalidToolArgumentsError):
         parse_tool_arguments("create_draft_order", raw)
 
@@ -218,3 +233,10 @@ def test_argument_models_cover_exactly_the_wire_schema_fields():
         }
         assert wire_required == model_required, name
         assert json.dumps(sorted(wire_fields))  # schemas stay JSON-serializable
+
+
+def test_argument_models_and_registry_cover_the_same_tools():
+    # ARGUMENT_MODELS and the default registry must stay in lockstep: a
+    # tool registered without an argument model (or vice versa) breaks
+    # parsing or dispatch for the other side
+    assert set(ARGUMENT_MODELS) == set(build_default_registry().names())

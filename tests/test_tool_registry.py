@@ -105,6 +105,7 @@ def test_create_draft_order_matches_order_create_contract():
     assert items["items"]["properties"]["quantity"] == {
         "type": "integer",
         "minimum": 1,
+        "maximum": 2147483647,
         "description": "Jumlah yang dipesan (unit terkecil).",
     }
     assert set(items["items"]["required"]) == {"product_id", "quantity"}

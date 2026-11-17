@@ -298,6 +298,35 @@ def test_tool_call_missing_arguments_invalid():
         provider.complete(USER_MSG)
 
 
+def test_blank_tool_call_id_is_invalid_response():
+    # blank ids fail NonBlankStr: must surface as a domain error, never
+    # as a raw pydantic ValidationError past the provider boundary
+    provider, _ = _provider(
+        lambda r: _json_response(
+            _tool_body([_tool_call("", "search_products", '{"search_term": "a"}')])
+        )
+    )
+    with pytest.raises(AgentInvalidResponseError, match="validation"):
+        provider.complete(USER_MSG)
+
+
+def test_duplicate_tool_call_ids_rejected():
+    # two calls sharing one id would double-execute and break the
+    # one-result-per-call transcript invariant
+    provider, _ = _provider(
+        lambda r: _json_response(
+            _tool_body(
+                [
+                    _tool_call("t1", "search_products", '{"search_term": "a"}'),
+                    _tool_call("t1", "search_products", '{"search_term": "b"}'),
+                ]
+            )
+        )
+    )
+    with pytest.raises(AgentInvalidResponseError, match="duplicate tool call id"):
+        provider.complete(USER_MSG)
+
+
 def test_non_json_body_invalid_response():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="<html>gateway error</html>")
@@ -488,6 +517,38 @@ def test_rate_limit_retries_exhausted_raises():
         provider.complete(USER_MSG)
     assert len(requests) == 2  # initial + 1 retry
     assert sleep.calls == [0.5]  # exponential backoff, no header to honor
+
+
+def test_negative_retry_after_falls_back_to_backoff():
+    responses = [
+        _rate_limited_response(retry_after="-1"),
+        _json_response(_text_body()),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    sleep = SleepRecorder()
+    provider, requests = _provider(handler, sleep=sleep)
+    assert provider.complete(USER_MSG).kind == "text"
+    assert len(requests) == 2
+    assert sleep.calls == [0.5]  # invalid hint ignored, default backoff used
+
+
+def test_nan_retry_after_falls_back_to_backoff():
+    responses = [
+        _rate_limited_response(retry_after="nan"),
+        _json_response(_text_body()),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    sleep = SleepRecorder()
+    provider, requests = _provider(handler, sleep=sleep)
+    assert provider.complete(USER_MSG).kind == "text"
+    assert len(requests) == 2
+    assert sleep.calls == [0.5]  # non-finite hint ignored, backoff used
 
 
 def test_unavailable_5xx_retries_with_backoff_and_succeeds():

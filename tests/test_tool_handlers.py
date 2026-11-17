@@ -18,7 +18,23 @@ from app.schemas.product_inquiry import (
     ProductInquiryRequest,
     ProductInquiryResponse,
 )
-from app.services.exceptions import InsufficientStockError, OrderNotFoundError
+from app.services.exceptions import (
+    CreditLimitExceededError,
+    CreditLimitNotConfiguredError,
+    CustomerNotFoundError,
+    EmptyOrderError,
+    InactiveCustomerError,
+    InactiveProductError,
+    InsufficientStockError,
+    InvalidOrderStatusError,
+    InventoryNotFoundError,
+    OrderNotFoundError,
+    OrderTotalUpdateError,
+    PriceListNotFoundError,
+    ProductNotFoundError,
+    ProductPriceNotFoundError,
+    ServiceError,
+)
 from app.tools.arguments import (
     ConfirmOrderArgs,
     CreateDraftOrderArgs,
@@ -31,6 +47,7 @@ from app.tools.handlers import (
     execute_confirm_order,
     execute_create_draft_order,
     execute_search_products,
+    map_service_error,
 )
 
 NOW = datetime.now(UTC)
@@ -145,7 +162,7 @@ def _order_detail(
 
 def _context(approved: bool = False) -> ToolContext:
     context = ToolContext(customer_id=CUSTOMER_ID, conversation_id="wa-1")
-    return context.with_confirm_order_approval() if approved else context
+    return context.with_confirm_order_approval(ORDER_ID) if approved else context
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +241,7 @@ def test_create_draft_order_builds_order_create_with_context_customer():
     assert order.items[0].product_id == PRODUCT_ID
     assert order.items[0].quantity == 10
     assert (
-        not hasattr(order.items[0], "unit_price")
-        or order.items[0].__pydantic_fields__["quantity"]
+        "unit_price" not in type(order.items[0]).model_fields
     )  # args carry no price path
 
 
@@ -291,6 +307,22 @@ def test_confirm_order_refuses_draft_owned_by_other_customer():
     assert orders.confirm_ids == []  # confirmation never ran
 
 
+def test_confirm_order_refuses_order_other_than_the_approved_one():
+    # approval for draft A must not authorize confirming draft B
+    other_order_id = uuid4()
+    orders = FakeOrderService(draft=_order_detail())
+    with pytest.raises(ToolHandlerError) as excinfo:
+        execute_confirm_order(
+            ConfirmOrderArgs(order_id=other_order_id),
+            _context(approved=True),  # approval names ORDER_ID
+            _services(orders=orders),
+        )
+    assert excinfo.value.code == "unauthorized"
+    assert excinfo.value.detail == {"order_id": str(other_order_id)}
+    assert orders.get_order_ids == []  # refused before any service call
+    assert orders.confirm_ids == []
+
+
 def test_confirm_order_success_with_approval_and_ownership():
     orders = FakeOrderService(
         draft=_order_detail(),
@@ -316,3 +348,57 @@ def test_confirm_order_missing_draft_propagates_not_found():
             _services(orders=orders),
         )
     assert orders.confirm_ids == []
+
+
+# ---------------------------------------------------------------------------
+# map_service_error exhaustiveness
+# ---------------------------------------------------------------------------
+
+
+def _every_service_error_instance() -> list[ServiceError]:
+    """One instance of every ServiceError subclass declared today."""
+    return [
+        CustomerNotFoundError(CUSTOMER_ID),
+        InactiveCustomerError(CUSTOMER_ID),
+        PriceListNotFoundError("daftar-utama"),
+        ProductNotFoundError(PRODUCT_ID),
+        InactiveProductError(PRODUCT_ID),
+        ProductPriceNotFoundError(PRODUCT_ID, uuid4()),
+        OrderNotFoundError(ORDER_ID),
+        OrderTotalUpdateError(ORDER_ID),
+        InvalidOrderStatusError(ORDER_ID, "draft", "confirmed"),
+        EmptyOrderError(ORDER_ID),
+        CreditLimitNotConfiguredError(CUSTOMER_ID),
+        CreditLimitExceededError(CUSTOMER_ID, Decimal("100"), Decimal("150")),
+        InventoryNotFoundError(PRODUCT_ID),
+        InsufficientStockError(PRODUCT_ID, 10, 5),
+    ]
+
+
+def _all_subclasses(root: type[ServiceError]) -> set[type[ServiceError]]:
+    found: set[type[ServiceError]] = set()
+    frontier: list[type[ServiceError]] = [root]
+    while frontier:
+        cls = frontier.pop()
+        for child in cls.__subclasses__():
+            if child not in found:
+                found.add(child)
+                frontier.append(child)
+    return found
+
+
+def test_map_service_error_leaves_no_silent_generic_fallback():
+    # every business failure reaches the model with its own category; a
+    # new subclass must be mapped in handlers, never silently generic
+    for exc in _every_service_error_instance():
+        mapped = map_service_error(exc)
+        assert (mapped.code, mapped.message) != (
+            "execution_error",
+            "Operasi bisnis gagal.",
+        ), type(exc).__name__
+
+
+def test_every_service_error_subclass_is_accounted_for():
+    listed = {type(exc).__name__ for exc in _every_service_error_instance()}
+    declared = {cls.__name__ for cls in _all_subclasses(ServiceError)}
+    assert listed == declared  # extend the instance list for new subclasses

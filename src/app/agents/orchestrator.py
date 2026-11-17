@@ -22,9 +22,11 @@ Execution control (P2.6):
 - Observability: every provider call and tool execution becomes one
   AgentRunEvent (correlation id, response id, tool name, call id,
   result category, duration), identifying and timing data only, no
-  raw arguments, no message content, no credentials. Events for a run
-  that ends in an exception are not returned: the exception itself is
-  the error classification the caller logs.
+  raw arguments, no message content, no credentials. When a run ends
+  in an exception, the orchestrator attaches the partial transcript
+  and events to the raised AgentError (partial_transcript /
+  partial_events): the exception stays the error classification the
+  caller logs, the partials let it persist what already happened.
 
 Constraints:
 - No SQL, no repositories, no transactions: business truth stays in the
@@ -41,7 +43,11 @@ Constraints:
 import time
 from collections.abc import Callable
 
-from app.agents.exceptions import AgentRoundLimitError, AgentToolCallLimitError
+from app.agents.exceptions import (
+    AgentError,
+    AgentRoundLimitError,
+    AgentToolCallLimitError,
+)
 from app.agents.instructions import AGENT_INSTRUCTIONS
 from app.agents.providers.surpluss import SurplussProvider
 from app.agents.schemas import (
@@ -97,62 +103,81 @@ class AgentOrchestrator:
         AgentProviderError subclasses unchanged, the caller maps them.
         Non-convergent loops raise AgentRoundLimitError and oversized
         tool batches raise AgentToolCallLimitError, instead of the loop
-        inventing an answer.
+        inventing an answer. Any AgentError raised after tool exchanges
+        carries partial_transcript and partial_events.
         """
         messages = list(agent_input.messages)
         tools = self._tool_executor.openai_tools()
         events: list[AgentRunEvent] = []
         executed_calls = 0
-        for _ in range(self._max_tool_rounds):
-            started = self._clock()
-            response = self._provider.complete(
-                [AgentMessage(role="system", content=self._instructions), *messages],
-                tools=tools,
-            )
-            events.append(
-                AgentRunEvent(
-                    kind="provider_call",
-                    correlation_id=context.conversation_id,
-                    response_id=response.response_id,
-                    outcome=response.kind,
-                    duration_ms=_duration_ms(started, self._clock()),
-                )
-            )
-            if response.kind == "text":
-                return AgentRunResult(
-                    final_text=response.text or "",
-                    response_id=response.response_id,
-                    transcript=messages,
-                    events=events,
-                )
-            calls = response.tool_calls or []
-            self._check_call_limits(calls, executed_calls)
-            messages.append(AgentMessage(role="assistant", tool_calls=calls))
-            for call in calls:
+        try:
+            for _ in range(self._max_tool_rounds):
                 started = self._clock()
-                result = self._tool_executor.execute(
-                    call.id, call.name, call.arguments, context
+                response = self._provider.complete(
+                    [
+                        AgentMessage(role="system", content=self._instructions),
+                        *messages,
+                    ],
+                    tools=tools,
                 )
                 events.append(
                     AgentRunEvent(
-                        kind="tool_execution",
+                        kind="provider_call",
                         correlation_id=context.conversation_id,
-                        tool_call_id=call.id,
-                        tool_name=call.name,
-                        ok=result.ok,
-                        category=result.error.code if result.error else None,
+                        response_id=response.response_id,
+                        outcome=response.kind,
                         duration_ms=_duration_ms(started, self._clock()),
                     )
                 )
-                messages.append(
-                    AgentMessage(
-                        role="tool",
-                        tool_call_id=call.id,
-                        content=result.model_dump_json(exclude_none=True),
+                if response.kind == "text":
+                    final_text = response.text or ""
+                    if final_text.strip():
+                        messages.append(
+                            AgentMessage(role="assistant", content=final_text)
+                        )
+                    return AgentRunResult(
+                        final_text=final_text,
+                        response_id=response.response_id,
+                        transcript=messages,
+                        events=events,
                     )
-                )
-            executed_calls += len(calls)
-        raise AgentRoundLimitError(self._max_tool_rounds)
+                calls = response.tool_calls or []
+                self._check_call_limits(calls, executed_calls)
+                messages.append(AgentMessage(role="assistant", tool_calls=calls))
+                for call in calls:
+                    started = self._clock()
+                    result = self._tool_executor.execute(
+                        call.id, call.name, call.arguments, context
+                    )
+                    events.append(
+                        AgentRunEvent(
+                            kind="tool_execution",
+                            correlation_id=context.conversation_id,
+                            tool_call_id=call.id,
+                            tool_name=call.name,
+                            ok=result.ok,
+                            category=result.error.code if result.error else None,
+                            duration_ms=_duration_ms(started, self._clock()),
+                        )
+                    )
+                    messages.append(
+                        AgentMessage(
+                            role="tool",
+                            tool_call_id=call.id,
+                            content=result.model_dump_json(exclude_none=True),
+                        )
+                    )
+                executed_calls += len(calls)
+            raise AgentRoundLimitError(self._max_tool_rounds)
+        except AgentError as exc:
+            # a failed run may already have committed tool side effects;
+            # hand the partial transcript and events to the caller via the
+            # exception so it can persist them and not retry those
+            # effects blind. Failures before any work stay partial-free.
+            if events:
+                exc.partial_transcript = messages
+                exc.partial_events = events
+            raise
 
     def _check_call_limits(
         self, calls: list[AgentToolCall], executed_calls: int

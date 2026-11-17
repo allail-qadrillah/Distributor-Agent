@@ -1,6 +1,6 @@
 """Tool executor, the single entry point for running one tool call.
 
-Flow (P2.4 milestone contract):
+Flow:
     model tool call → registry → argument validation → handler →
     business service → structured ToolResult.
 
@@ -8,11 +8,14 @@ Layering: this module sits BELOW the agent layer (orchestrator →
 tools → services) and takes tool calls as primitives (id, name, raw
 JSON arguments) so the tools package never imports agent code.
 
-Every failure becomes a ToolResult, never an exception past this layer:
-unknown tool, malformed JSON, schema violations, authorization refusals,
-mapped service business errors, and bounded execution errors. The model
-receives the outcome as data it can read and relay, it can never see
-success that did not happen.
+Every model-reachable failure becomes a ToolResult, never an exception
+past this layer: unknown tool, malformed JSON, schema violations,
+authorization refusals, mapped service business errors, and bounded
+execution errors. The model receives the outcome as data it can read
+and relay, it can never see success that did not happen. Wiring errors
+(MissingToolHandlerError: a registered tool with no handler) are
+programming mistakes, not model failures: they raise loudly so the
+broken wiring is fixed, never silently degraded.
 """
 
 from app.services.exceptions import ServiceError
@@ -35,18 +38,19 @@ from app.tools.handlers import (
     execute_search_products,
     map_service_error,
 )
-from app.tools.registry import ToolRegistry, build_default_registry
+from app.tools.registry import ToolRegistry
 from app.tools.results import ToolResult
 
 
 class ToolExecutor:
     """Executes model-requested tool calls against registered tools."""
 
-    def __init__(
-        self, services: ToolServices, registry: ToolRegistry | None = None
-    ) -> None:
+    def __init__(self, services: ToolServices, registry: ToolRegistry) -> None:
+        """registry is explicit: a handlerless default would build an
+        executor whose every execute() explodes at lookup, so the caller
+        names the wiring (build_tool_executor does it for the app)."""
         self._services = services
-        self._registry = registry if registry is not None else build_default_registry()
+        self._registry = registry
 
     def execute(
         self,

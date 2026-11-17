@@ -124,7 +124,7 @@ def _call(name: str, arguments: dict | str, call_id: str = CALL_ID) -> AgentTool
 
 def _context(approved: bool = False) -> ToolContext:
     context = ToolContext(customer_id=CUSTOMER_ID)
-    return context.with_confirm_order_approval() if approved else context
+    return context.with_confirm_order_approval(ORDER_ID) if approved else context
 
 
 def _execute(

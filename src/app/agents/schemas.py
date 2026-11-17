@@ -12,8 +12,11 @@ Conventions follow app.schemas (Pydantic v2, BaseSchema extra=forbid):
   provider.
 - AgentInput: application-owned conversation history, newest user message
   last; replaying prior tool exchanges is allowed (the caller persisted
-  them from AgentRunResult.transcript). System messages are rejected.
-  The orchestrator owns the instructions.
+  them from AgentRunResult.transcript) and pairing-checked: every
+  assistant tool-call turn must be completed by one tool result per
+  call id, so a truncated or corrupt store fails here, not at the
+  provider. System messages are rejected. The orchestrator owns the
+  instructions.
 - AgentInput never carries customer identity: authentication context
   stays in the application layer (tools.context.ToolContext) and must
   never come from model output.
@@ -72,6 +75,9 @@ class AgentMessage(BaseSchema):
                     raise ValueError("assistant tool_calls must be a non-empty list")
                 if self.content is not None:
                     raise ValueError("assistant tool-call turns carry no text content")
+                ids = [call.id for call in self.tool_calls]
+                if len(ids) != len(set(ids)):
+                    raise ValueError("assistant tool_calls must have unique ids")
             elif not (self.content and self.content.strip()):
                 raise ValueError("assistant message needs content or tool_calls")
         else:  # tool
@@ -101,7 +107,37 @@ class AgentInput(BaseSchema):
             )
         if self.messages[-1].role != "user":
             raise ValueError("the last message must be the current user message")
+        self._validate_tool_pairing()
         return self
+
+    def _validate_tool_pairing(self) -> None:
+        """Replayed history must stay a sendable transcript: every
+        assistant tool-call turn is completed by exactly one tool result
+        per call id, in sequence, with no orphans and no strays."""
+        pending: set[str] = set()
+        for message in self.messages:
+            if message.role == "assistant" and message.tool_calls is not None:
+                if pending:
+                    raise ValueError(
+                        "tool results must complete a tool-call turn "
+                        "before the next turn"
+                    )
+                pending = {call.id for call in message.tool_calls}
+            elif message.role == "tool":
+                if not pending:
+                    raise ValueError(
+                        "tool result has no preceding assistant tool-call turn"
+                    )
+                if message.tool_call_id not in pending:
+                    raise ValueError(
+                        f"tool result {message.tool_call_id!r} "
+                        "does not match a pending tool call"
+                    )
+                pending.discard(message.tool_call_id)
+            elif pending:
+                raise ValueError(
+                    "tool results must complete a tool-call turn before the next turn"
+                )
 
 
 class AgentResponse(BaseSchema):
@@ -163,11 +199,13 @@ class AgentRunResult(BaseSchema):
 
     final_text: the customer-facing answer from the model's final
     text turn.
-    transcript: the conversation history INCLUDING the assistant
-    tool-call turns and tool results of this run, EXCLUDING the system
-    instructions, persist this and replay it as the next AgentInput
-    history. Without the tool exchanges, the provider would reject the
-    next request (tool results must follow their tool calls).
+    transcript: the conversation history INCLUDING this run's assistant
+    tool-call turns, tool results, and final assistant text turn,
+    EXCLUDING the system instructions, persist this and replay it as
+    the next AgentInput history. Without the tool exchanges, the
+    provider would reject the next request (tool results must follow
+    their tool calls); without the final text turn, the model would
+    not see its own last answer.
     response_id: the provider completion id of the final response.
     events: per-call observability records (provider calls and tool
     executions) for logging, identifying fields and durations only.

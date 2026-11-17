@@ -22,10 +22,12 @@ objects; business logic, instructions, and orchestration live elsewhere.
 No repositories, no SQL, no transactions here.
 """
 
+import math
 import time
 from collections.abc import Callable
 
 import httpx
+from pydantic import ValidationError
 
 from app.agents.exceptions import (
     AgentAuthenticationError,
@@ -128,36 +130,20 @@ class SurplussProvider:
         while True:
             try:
                 response = self._request(payload, headers)
-            except AgentProviderUnavailableError:
-                # transport-level transient: back off and try again
-                if attempt >= self._max_retries:
-                    raise
-                self._sleep(self._backoff_delay(attempt))
-                attempt += 1
-                continue
-            try:
                 return self._normalize(response)
-            except AgentRateLimitError as exc:
-                if attempt >= self._max_retries:
-                    raise
-                wait = (
-                    exc.retry_after
-                    if exc.retry_after is not None
-                    else self._backoff_delay(attempt)
-                )
-                if wait > self._max_retry_wait:
-                    # waiting longer than the cap serves nobody: raise
-                    raise
-                self._sleep(wait)
-                attempt += 1
-                continue
             except AgentProviderUnavailableError:
-                # 5xx/503 routing from the body: retryable like transport
-                if attempt >= self._max_retries:
+                # transport errors and 5xx/503 routing: retryable
+                wait = self._retry_wait(attempt, None)
+                if wait is None:
                     raise
-                self._sleep(self._backoff_delay(attempt))
-                attempt += 1
-                continue
+            except AgentRateLimitError as exc:
+                # honor Retry-After when it fits the wait cap
+                wait = self._retry_wait(attempt, exc.retry_after)
+                if wait is None:
+                    raise
+            self._sleep(wait)
+            attempt += 1
+            continue
 
     def _request(self, payload: dict, headers: dict) -> httpx.Response:
         """One HTTP round trip; transport/timeout errors mapped here."""
@@ -178,6 +164,16 @@ class SurplussProvider:
 
     def _backoff_delay(self, attempt: int) -> float:
         return _RETRY_BASE_DELAY * (2**attempt)
+
+    def _retry_wait(self, attempt: int, suggested: float | None) -> float | None:
+        """Seconds to wait before the next attempt, None when the retry
+        budget is spent or the suggested wait exceeds the cap (raise)."""
+        if attempt >= self._max_retries:
+            return None
+        wait = suggested if suggested is not None else self._backoff_delay(attempt)
+        if wait > self._max_retry_wait:
+            return None
+        return wait
 
     def _wire_message(self, message: AgentMessage) -> dict:
         """One internal AgentMessage → provider wire object.
@@ -265,6 +261,7 @@ class SurplussProvider:
         if not isinstance(tool_calls, list) or not tool_calls:
             raise AgentInvalidResponseError("tool_calls must be a non-empty list")
         parsed: list[AgentToolCall] = []
+        seen_ids: set[str] = set()
         for entry in tool_calls:
             if not isinstance(entry, dict):
                 raise AgentInvalidResponseError("tool call entry is not an object")
@@ -282,17 +279,24 @@ class SurplussProvider:
                     "tool call arguments must be a raw JSON string"
                 )
             try:
-                parsed.append(
-                    AgentToolCall(
-                        id=entry["id"], name=function["name"], arguments=arguments
-                    )
+                call = AgentToolCall(
+                    id=entry["id"], name=function["name"], arguments=arguments
                 )
-                # NonBlankStr validation on id/name raises pydantic errors;
-                # re-map so callers only ever see agent domain errors.
             except KeyError as exc:
                 raise AgentInvalidResponseError(
                     f"tool call is missing field {exc}"
                 ) from exc
+            except ValidationError as exc:
+                # provider output is external data: blank or mistyped
+                # id/name becomes a domain error, never a raw pydantic
+                # exception past this boundary
+                raise AgentInvalidResponseError(
+                    f"tool call failed validation: {exc.errors()[0]['msg']}"
+                ) from exc
+            if call.id in seen_ids:
+                raise AgentInvalidResponseError(f"duplicate tool call id {call.id!r}")
+            seen_ids.add(call.id)
+            parsed.append(call)
         return parsed
 
     def _raise_provider_error(
@@ -322,9 +326,14 @@ class SurplussProvider:
             retry_header = response.headers.get("Retry-After")
             if retry_header is not None:
                 try:
-                    retry_after = float(retry_header)
+                    candidate = float(retry_header)
                 except ValueError:
                     pass  # non-numeric Retry-After: keep None
+                else:
+                    # negative or non-finite hints are invalid values, not
+                    # instructions: fall back to the default backoff
+                    if math.isfinite(candidate) and candidate >= 0:
+                        retry_after = candidate
             raise AgentRateLimitError(
                 f"{message} ({context})", retry_after=retry_after, **kw
             )

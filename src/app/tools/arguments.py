@@ -31,8 +31,10 @@ from app.tools.definitions import (
 )
 from app.tools.exceptions import ToolError, UnknownToolError
 
-# mirrors the wire schema: integer, minimum 1 (orders CHECK quantity > 0)
-ToolQuantity = Annotated[int, Field(gt=0)]
+# mirrors the wire schema: integer, minimum 1 (orders CHECK quantity > 0),
+# maximum 2_147_483_647 (PostgreSQL INTEGER, rejected at the tool boundary
+# instead of failing the insert later)
+ToolQuantity = Annotated[int, Field(gt=0, le=2_147_483_647)]
 
 
 class SearchProductsArgs(BaseSchema):
