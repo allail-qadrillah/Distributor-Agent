@@ -1,11 +1,3 @@
-"""Service-layer domain exceptions.
-
-Repositories let psycopg errors propagate untouched; services raise these
-for business-rule failures (missing or ineligible entities). The API layer
-maps both kinds to user-safe responses — each exception carries the
-identifiers needed for that mapping.
-"""
-
 from decimal import Decimal
 from uuid import UUID
 
@@ -13,7 +5,7 @@ from app.schemas.order import OrderStatus
 
 
 class ServiceError(Exception):
-    """Base for service-layer business failures."""
+    pass
 
 
 class CustomerNotFoundError(ServiceError):
@@ -81,9 +73,6 @@ class InvalidOrderStatusError(ServiceError):
 
 
 class EmptyOrderError(ServiceError):
-    """Zero-item order: migration 001 requires the confirm service to
-    reject it (no SQL constraint can express 'child row count > 0')."""
-
     def __init__(self, order_id: UUID) -> None:
         super().__init__(f"order {order_id} has no items to confirm")
         self.order_id = order_id

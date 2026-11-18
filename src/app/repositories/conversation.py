@@ -1,12 +1,3 @@
-"""Conversation repository — SQL for the conversations table.
-
-Same contract as every repository: the caller's connection (dict_row),
-parameterized SQL only, no business rules, no connection or transaction
-lifecycle here. State transition policy (which from-state may go where)
-lives in the messaging layer; this repo executes guarded updates the
-caller parameterizes.
-"""
-
 from uuid import UUID
 
 import psycopg
@@ -33,10 +24,6 @@ class ConversationRepository:
         phone: str,
         customer_id: UUID | None = None,
     ) -> ConversationResponse:
-        """Return the permanent conversation for this phone, creating it
-        on first contact. Unknown senders get a row with customer_id NULL
-        (retention without a fake customer); registration is not required
-        to keep the messages."""
         with conn.cursor() as cur:
             cur.execute(_INSERT, {"phone": phone, "customer_id": customer_id})
             row = cur.fetchone()
@@ -51,9 +38,6 @@ class ConversationRepository:
     def link_customer(
         self, conn: psycopg.Connection, conversation_id: UUID, customer_id: UUID
     ) -> ConversationResponse | None:
-        """Bind the conversation to a customer once. Guarded: an existing
-        link is never overwritten (phone ownership changes require manual
-        intervention)."""
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -105,10 +89,6 @@ class ConversationRepository:
         to_state: ConversationState,
         reason: str | None = None,
     ) -> ConversationResponse | None:
-        """Guarded state transition: fires only when the current state is
-        one of from_states. Returns the updated row, None when the current
-        state is not eligible (the caller decides whether that is a
-        not-found, a conflict, or an idempotent no-op)."""
         with conn.cursor() as cur:
             cur.execute(
                 f"""

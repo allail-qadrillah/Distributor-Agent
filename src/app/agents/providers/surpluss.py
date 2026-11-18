@@ -1,25 +1,5 @@
-"""Surpluss Intelligence provider adapter, GLM via OpenAI-compatible
-chat completions.
-
-Verified provider contract (docs: surplusintelligence.ai llms.txt,
-/api-reference/chat-completions, checked live 2026-11-17):
-- POST {base_url}/chat/completions, Authorization: Bearer <inf_... key>
-- OpenAI request/response envelope; tools and tool_choice in OpenAI
-  format; tool calls arrive as choices[0].message.tool_calls[]
-  (id, type "function", function.name, function.arguments JSON string)
-- Errors: {"error": {type, code, message, ...}, "request_id": ...}.
-  Branch on error.code (stable), never on message
-- CRITICAL documented trap: a long-running NON-STREAMING request always
-  returns HTTP 200, even on failure, with the error envelope in the body.
-  Success must be decided by the body (no error + choices present), not
-  by the status line. This is why the integration uses plain httpx
-  instead of the OpenAI SDK: the SDK's status-based success check treats
-  those failed 200s as completions.
-
-This module is the only file that knows the provider wire format. It
-receives internal AgentMessage objects and returns internal AgentResponse
-objects; business logic, instructions, and orchestration live elsewhere.
-No repositories, no SQL, no transactions here.
+"""Surpluss Intelligence provider: HTTP 200 on failure, error-first parsing.
+Branch on error.code (stable). See surplusintelligence.ai/llms.txt.
 """
 
 import math
@@ -42,31 +22,17 @@ from app.agents.exceptions import (
 from app.agents.schemas import AgentMessage, AgentResponse, AgentToolCall
 
 _COMPLETIONS_PATH = "/chat/completions"
-# generous read timeout: the provider documents legitimately long-running
-# (non-streaming) generations; tight connect timeout fails fast on
-# unreachable routing
 _DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
-_MAX_ERROR_SNIPPET = 200  # logged body prefix when the body is unparseable
+_MAX_ERROR_SNIPPET = 200
 
 _AUTH_ERROR_CODES = {"invalid_api_key", "unauthorized", "authentication_error"}
 
-# Transient-only retry (P2.6). A retried completion request has NO
-# business side effects (the model has not executed any tool yet), which
-# is why retry lives here and tool executions are never retried.
 DEFAULT_MAX_RETRIES = 2
-_RETRY_BASE_DELAY = 0.5  # seconds, exponential per attempt: 0.5, 1.0, ...
-_MAX_RETRY_WAIT = 8.0  # never sleep longer than this, even if asked
+_RETRY_BASE_DELAY = 0.5
+_MAX_RETRY_WAIT = 8.0
 
 
 class SurplussProvider:
-    """Sends chat completion requests to Surpluss Intelligence and
-    normalizes responses into internal AgentResponse objects.
-
-    Fail-fast configuration: constructing with a missing API key, model,
-    or base URL raises AgentConfigurationError, so misconfiguration is
-    caught before the first request, not during a customer conversation.
-    """
-
     def __init__(
         self,
         api_key: str,
@@ -90,34 +56,16 @@ class SurplussProvider:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._transport = transport  # test seam: httpx.MockTransport
+        self._transport = transport
         self._max_retries = max_retries
         self._max_retry_wait = max_retry_wait
-        self._sleep = sleep  # test seam: injected sleeper, no real waiting
+        self._sleep = sleep
 
     def complete(
         self,
         messages: list[AgentMessage],
         tools: list[dict] | None = None,
     ) -> AgentResponse:
-        """Send one non-streaming chat completion; return the normalized
-        response or raise an AgentProviderError subclass.
-
-        messages may contain the full multi-turn transcript: user/assistant
-        text turns, assistant tool-call turns, and tool result turns,
-        serialized to the provider's documented protocol. tools is the
-        OpenAI-format function tool list (from ToolRegistry.openai_tools());
-        None sends no tools. tool_choice stays at the provider default
-        (auto), the application never forces a call.
-
-        Transient failures are retried a bounded number of times:
-        rate limiting (honoring Retry-After when it fits the wait cap)
-        and provider unavailability (transport errors, 5xx). Timeouts
-        are NOT retried, the read timeout (120s) has already elapsed
-        and a retry would double the customer's wait. Authentication,
-        configuration, and response-shape failures are permanent: they
-        raise on the first attempt.
-        """
         payload = {
             "model": self._model,
             "stream": False,
@@ -132,12 +80,10 @@ class SurplussProvider:
                 response = self._request(payload, headers)
                 return self._normalize(response)
             except AgentProviderUnavailableError:
-                # transport errors and 5xx/503 routing: retryable
                 wait = self._retry_wait(attempt, None)
                 if wait is None:
                     raise
             except AgentRateLimitError as exc:
-                # honor Retry-After when it fits the wait cap
                 wait = self._retry_wait(attempt, exc.retry_after)
                 if wait is None:
                     raise
@@ -146,7 +92,6 @@ class SurplussProvider:
             continue
 
     def _request(self, payload: dict, headers: dict) -> httpx.Response:
-        """One HTTP round trip; transport/timeout errors mapped here."""
         try:
             with httpx.Client(
                 base_url=self._base_url,
@@ -166,8 +111,6 @@ class SurplussProvider:
         return _RETRY_BASE_DELAY * (2**attempt)
 
     def _retry_wait(self, attempt: int, suggested: float | None) -> float | None:
-        """Seconds to wait before the next attempt, None when the retry
-        budget is spent or the suggested wait exceeds the cap (raise)."""
         if attempt >= self._max_retries:
             return None
         wait = suggested if suggested is not None else self._backoff_delay(attempt)
@@ -176,13 +119,6 @@ class SurplussProvider:
         return wait
 
     def _wire_message(self, message: AgentMessage) -> dict:
-        """One internal AgentMessage → provider wire object.
-
-        Tool-call turns and tool results follow the provider's documented
-        multi-turn transcript format: an assistant message with null
-        content plus tool_calls, then role:'tool' messages whose
-        tool_call_id matches the call they answer.
-        """
         if message.role == "tool":
             return {
                 "role": "tool",
@@ -219,8 +155,6 @@ class SurplussProvider:
             raise AgentInvalidResponseError(
                 f"provider returned a non-object JSON body (HTTP {response.status_code})"
             )
-        # error-first, regardless of status: long-running failures commit
-        # HTTP 200 before the outcome exists (documented provider behavior)
         error = body.get("error")
         if error is not None or "choices" not in body:
             self._raise_provider_error(response, body, error)
@@ -247,11 +181,8 @@ class SurplussProvider:
             )
         content = message.get("content")
         if content is None:
-            # empty completion: no text, no tool calls, nothing usable
             raise AgentInvalidResponseError("model message has no content")
         if not isinstance(content, str):
-            # multimodal content blocks: parseable but not supported by
-            # this milestone, never silently coerced
             raise AgentUnsupportedResponseError(
                 f"unsupported message content type: {type(content).__name__}"
             )
@@ -287,9 +218,6 @@ class SurplussProvider:
                     f"tool call is missing field {exc}"
                 ) from exc
             except ValidationError as exc:
-                # provider output is external data: blank or mistyped
-                # id/name becomes a domain error, never a raw pydantic
-                # exception past this boundary
                 raise AgentInvalidResponseError(
                     f"tool call failed validation: {exc.errors()[0]['msg']}"
                 ) from exc
@@ -302,11 +230,6 @@ class SurplussProvider:
     def _raise_provider_error(
         self, response: httpx.Response, body: dict, error: object
     ) -> None:
-        """Map the provider error envelope to an agent domain exception.
-
-        Branches on error.code (the documented stable key) and falls back
-        to the HTTP status. request_id is preserved for logging.
-        """
         code: str | None = None
         message = "provider request failed"
         if isinstance(error, dict):
@@ -328,17 +251,14 @@ class SurplussProvider:
                 try:
                     candidate = float(retry_header)
                 except ValueError:
-                    pass  # non-numeric Retry-After: keep None
+                    pass
                 else:
-                    # negative or non-finite hints are invalid values, not
-                    # instructions: fall back to the default backoff
                     if math.isfinite(candidate) and candidate >= 0:
                         retry_after = candidate
             raise AgentRateLimitError(
                 f"{message} ({context})", retry_after=retry_after, **kw
             )
         if code == "model_not_found":
-            # model not in the catalog at all: a configuration problem
             raise AgentConfigurationError(
                 f"model {self._model!r} is not in the provider catalog ({context})"
             )
@@ -347,7 +267,5 @@ class SurplussProvider:
             or status in (402, 404, 503)
             or (status or 0) >= 500
         ):
-            # 402 billing, 404 no sellers, 5xx/503 routing: provider-side
-            # conditions the application cannot fix by changing its input
             raise AgentProviderUnavailableError(f"{message} ({context})", **kw)
         raise AgentProviderError(f"{message} ({context})", **kw)

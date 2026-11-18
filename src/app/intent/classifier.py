@@ -1,28 +1,3 @@
-"""MessageIntentClassifier, a separate OpenAI-compatible SLM client.
-
-Distinct from the main agent provider BY CONFIGURATION AND BY INSTANCE:
-its own api key, model, base URL, and timeout come from the
-INTENT_CLASSIFIER_* settings. There is no fallback to the agent provider
-(on purpose: a misconfigured classifier must surface as an error, and the
-gate turns every error into human handoff, fail closed).
-
-Wire contract: plain OpenAI chat completions, no tools, one system
-message with the classification instructions, one user message carrying
-the conversation context and the latest customer message as DATA.
-
-Prompt-injection stance: customer text and prior conversation content are
-untrusted. The system message orders the model to treat the user-message
-payload as data to classify, never as instructions, and the payload is
-labeled with fixed section headers. Output must be a single JSON object
-{"category", "confidence", "reason"}; parsing and validation are strict
-(extra="forbid", category literal, confidence 0..1, non-blank reason) and
-any violation raises IntentClassifierInvalidOutputError.
-
-No retry: the timeout budget (default 5s) is the whole latency budget of
-the gate; a retry would double the customer's wait for a decision whose
-safe fallback (handoff) is one database update away.
-"""
-
 import json
 from collections.abc import Sequence
 
@@ -79,8 +54,6 @@ Jawab HANYA satu objek JSON, tanpa teks lain:
 
 
 class MessageIntentClassifier:
-    """Classifies one customer message against the four categories."""
-
     def __init__(
         self,
         api_key: str,
@@ -111,17 +84,11 @@ class MessageIntentClassifier:
         self._timeout = httpx.Timeout(
             timeout_seconds, connect=min(5.0, timeout_seconds)
         )
-        self._transport = transport  # test seam: httpx.MockTransport
+        self._transport = transport
 
     def classify(
         self, message: str, context: Sequence[IntentContextMessage] = ()
     ) -> IntentClassification:
-        """Classify one message with optional conversation context.
-
-        Raises IntentClassifierTimeoutError / IntentClassifierProviderError /
-        IntentClassifierInvalidOutputError; the gate maps all of them to
-        human handoff.
-        """
         payload = {
             "model": self._model,
             "stream": False,
@@ -167,10 +134,6 @@ class MessageIntentClassifier:
         return self._extract_content(response)
 
     def _extract_content(self, response: httpx.Response) -> str:
-        # HTTP status first: a non-2xx response is a provider failure even
-        # when the body carries a well-formed choices array (a proxy or
-        # the provider itself may answer 5xx with cached/error bodies).
-        # Fail closed: the gate turns this into human handoff.
         if not 200 <= response.status_code < 300:
             raise IntentClassifierProviderError(
                 f"classifier HTTP {response.status_code}",
@@ -187,8 +150,6 @@ class MessageIntentClassifier:
             raise IntentClassifierInvalidOutputError(
                 "classifier returned a non-object JSON body"
             )
-        # error-first, regardless of status: OpenAI-compatible providers
-        # may answer 200 with an error envelope
         error = body.get("error")
         if error is not None or "choices" not in body:
             message = (
@@ -220,9 +181,6 @@ class MessageIntentClassifier:
         return content
 
     def _parse(self, content: str) -> IntentClassification:
-        """Strict parse of the model output: one JSON object, then full
-        IntentClassification validation. Fenced or surrounded output is
-        tolerated by extracting the outermost JSON object."""
         text = content.strip()
         if text.startswith("```"):
             text = text.removeprefix("```json").removeprefix("```")

@@ -1,17 +1,3 @@
-"""Order schemas: status enum, items, draft creation, response.
-
-Columns mirror orders/order_items. State transitions (confirm/deliver/cancel)
-are business operations — service layer, not schemas.
-
-Documented application-only deviation from column shape:
-order_items.unit_price IS a database column (snapshot), but it is NOT
-part of order input — the backend resolves prices from the customer's
-price list. Clients/LLMs never supply prices. OrderItemResponse returns
-the stored snapshot (unit_price + generated subtotal).
-OrderItemInsert carries the service-resolved unit_price to the
-repository — internal input, never customer-facing.
-"""
-
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -52,13 +38,6 @@ class OrderItemResponse(BaseSchema):
 
 
 class OrderItemInsert(BaseSchema):
-    """Internal insert input for order_items — NOT customer-facing.
-
-    OrderItemCreate (customer input) deliberately has no unit_price; the
-    service resolves it from the customer's price list and constructs
-    this type. unit_price is the order-creation snapshot stored in
-    order_items.
-    """
 
     product_id: UUID
     quantity: Annotated[int, Field(gt=0)]  # mirrors CHECK (quantity > 0)
@@ -66,11 +45,6 @@ class OrderItemInsert(BaseSchema):
 
 
 class OrderCreate(BaseSchema):
-    """Draft order: existing customer + at least one item.
-
-    order_number, status, total_amount, timestamps, item prices and
-    subtotals are system-generated.
-    """
 
     customer_id: UUID
     notes: str | None = None
@@ -103,6 +77,5 @@ class OrderResponse(BaseSchema):
 
 
 class OrderDetailResponse(OrderResponse):
-    """Order plus its items — read model for get-by-id / detail views."""
 
     items: list[OrderItemResponse]

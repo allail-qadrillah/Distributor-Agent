@@ -1,11 +1,3 @@
-"""Outbox repository — SQL for the outbox_messages table.
-
-Outbox delivery state machine (policy lives in the messaging layer):
-pending -> sending (atomic claim) -> sent | failed | unknown. A delivery
-report may reconcile pending/sending/unknown into sent/failed. 'unknown'
-is never treated as failed and is never auto-resent.
-"""
-
 from uuid import UUID
 
 import psycopg
@@ -75,9 +67,6 @@ class OutboxRepository:
         conversation_id: UUID,
         body: str,
     ) -> OutboxMessageResponse:
-        """Persist the outbound intent BEFORE any send attempt. The
-        UNIQUE (message_id) constraint makes one outbound row per reply;
-        a second insert for the same message raises, never duplicates."""
         with conn.cursor() as cur:
             cur.execute(
                 _INSERT,
@@ -97,10 +86,6 @@ class OutboxRepository:
         max_attempts: int,
         conversation_id: UUID | None = None,
     ) -> OutboxMessageResponse | None:
-        """Atomically claim the oldest dispatchable row: pending, or
-        failed within the attempt budget. 'sending' and 'unknown' rows
-        are never claimed: 'sending' belongs to another dispatcher,
-        'unknown' waits for a delivery report (no blind resend)."""
         sql = _CLAIM_FOR_CONVERSATION if conversation_id is not None else _CLAIM
         with conn.cursor() as cur:
             cur.execute(
@@ -120,10 +105,6 @@ class OutboxRepository:
         status: OutboxStatus,
         last_error: str | None = None,
     ) -> OutboxMessageResponse | None:
-        """Record the adapter's send outcome for a claimed row.
-        Guarded from 'sending' so a strayed report can never overwrite a
-        reconciled state. 'sent' stamps sent_at; attempts were already
-        incremented by the claim."""
         sent_at_expr = "now()" if status == "sent" else "sent_at"
         with conn.cursor() as cur:
             cur.execute(
@@ -142,9 +123,6 @@ class OutboxRepository:
     def apply_delivery_report(
         self, conn: psycopg.Connection, outbox_id: UUID, delivered: bool
     ) -> OutboxMessageResponse | None:
-        """Reconcile a late delivery report: pending/sending/unknown may
-        become sent or failed. An already-terminal row returns None
-        (duplicate or late report, the caller treats it as a no-op)."""
         status = "sent" if delivered else "failed"
         sent_at_expr = "now()" if delivered else "sent_at"
         with conn.cursor() as cur:
@@ -164,11 +142,6 @@ class OutboxRepository:
     def reconcile_stale_sending(
         self, conn: psycopg.Connection, stale_after_seconds: float
     ) -> list[OutboxMessageResponse]:
-        """Reconcile expired 'sending' claims to 'unknown' (M3). A row
-        stays 'sending' only while its dispatcher is alive; past the
-        lease the outcome is unknowable — never resent automatically,
-        only resolved by a delivery report or an operator. Idempotent:
-        already-reconciled rows are no longer 'sending'."""
         with conn.cursor() as cur:
             cur.execute(_RECONCILE_STALE, {"stale_after": stale_after_seconds})
             rows = cur.fetchall()

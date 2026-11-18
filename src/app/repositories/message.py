@@ -1,11 +1,3 @@
-"""Message repository — SQL for the messages table (transcript storage).
-
-Same repository contract: caller's connection, parameterized SQL, no
-transaction management. Inbound idempotency is the INSERT ... ON CONFLICT
-(external_message_id) DO NOTHING: one atomic statement claims a webhook
-delivery; the losing delivery gets None and is skipped.
-"""
-
 from uuid import UUID
 
 import psycopg
@@ -44,9 +36,6 @@ class MessageRepository:
         external_message_id: str,
         content: str,
     ) -> ConversationMessageResponse | None:
-        """Atomically claim one inbound external message id. None means a
-        duplicate delivery: the message was already stored and processed
-        (or is being processed under the conversation lock)."""
         with conn.cursor() as cur:
             cur.execute(
                 _CLAIM_INBOUND,
@@ -65,9 +54,6 @@ class MessageRepository:
         conversation_id: UUID,
         message: MessageInsert,
     ) -> ConversationMessageResponse:
-        """Append one transcript message (agent turn, tool result, or the
-        outbound assistant text). Inserted one at a time in caller order:
-        seq (identity) then preserves the transcript exactly."""
         payload = {
             "conversation_id": conversation_id,
             "direction": message.direction,
@@ -95,10 +81,6 @@ class MessageRepository:
         limit: int | None = None,
         roles: tuple[str, ...] | None = None,
     ) -> list[ConversationMessageResponse]:
-        """Transcript order: ascending seq. before_seq/limit slice the
-        tail for intent context: WITH limit the NEWEST rows are returned
-        (still ascending); roles filters to specific roles with
-        non-null content."""
         clauses = ["conversation_id = %(conversation_id)s"]
         if before_seq is not None:
             clauses.append("seq < %(before_seq)s")
@@ -139,9 +121,6 @@ class MessageRepository:
     def list_unread_inbound(
         self, conn: psycopg.Connection, conversation_id: UUID
     ) -> list[ConversationMessageResponse]:
-        """Stored unread inbound messages, oldest first: the deferred
-        messages (approval pending delivery, handoff period) that wait
-        for an explicit trigger before any agent run."""
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -159,8 +138,6 @@ class MessageRepository:
     def mark_read(
         self, conn: psycopg.Connection, message_id: UUID
     ) -> ConversationMessageResponse | None:
-        """Guarded: only unread -> read, so a human's unread marker is
-        never silently consumed twice."""
         with conn.cursor() as cur:
             cur.execute(
                 f"""

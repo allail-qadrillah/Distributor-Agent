@@ -1,5 +1,3 @@
-"""Inventory schema. Read-only: single source of truth is the inventory table."""
-
 from datetime import datetime
 from uuid import UUID
 

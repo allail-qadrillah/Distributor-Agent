@@ -1,5 +1,3 @@
-"""Price list and product price schemas. Columns mirror price_lists/product_prices."""
-
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
