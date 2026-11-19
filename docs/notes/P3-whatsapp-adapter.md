@@ -1,31 +1,23 @@
-# Catatan Engineering, P3: WhatsApp Bridge Contract
+# Engineering Note, P3: WhatsApp Bridge Contract
 
-Tanggal: 2026-11-18 · Status: kontrak diimplementasi sisi Python; pengiriman WhatsApp nyata BELUM diuji (bridge Node belum ada di lingkungan ini)
+Date: 2026-11-18 · Status: the contract is implemented on the Python side. Real WhatsApp delivery is NOT tested (bridge implementation: `docs/notes/P4-whatsapp-bridge.md`).
 
-## 1. Tujuan
+## 1. Purpose
 
-Mendefinisikan kontrak kawat (wire contract) antara aplikasi Python dan bridge WhatsApp eksternal (layanan Node.js berbasis Baileys). Sisi Python mengimplementasi kontrak ini penuh (normalisasi inbound, adapter outbound, webhook); sisi bridge tinggal mengikuti. Dokumen ini dirujuk oleh `.env.example`.
+Define the wire contract between the Python app and the external WhatsApp bridge (a Node.js service built on Baileys). The Python side implements the contract in full (inbound normalization, outbound adapter, webhooks). The bridge side only follows it. This document is referenced by `.env.example`.
 
-## 2. Fakta Baileys yang diverifikasi
+## 2. Verified Baileys facts
 
-Diverifikasi dari sumber WhiskeySockets/Baileys (2026-11-18):
+Verified against the WhiskeySockets/Baileys source (2026-11-18):
 
-- Event `messages.upsert` membawa `{"messages": WAMessage[], "type": "notify" | "append"}`.
-  `"notify"` = pesan hidup (diproses); `"append"` = backfill riwayat sync — DILEWATI,
-  tidak boleh direplay ke agen.
-- `WAMessage.key = {remoteJid, id, fromMe, participant?}`. Chat 1:1 memakai
-  `<digits>@s.whatsapp.net`; grup `@g.us`; broadcast `status@broadcast`; newsletter
-  `@newsletter`; LID `@lid` (tidak bisa dipetakan ke E.164).
-- Teks pelanggan ada di `message.conversation` ATAU
-  `message.extendedTextMessage.text`. Jenis konten lain (gambar, dokumen) tidak
-  membawa teks yang bisa diproses pada milestone ini.
-- Read receipt TIDAK otomatis: Baileys hanya mengirimnya lewat pemanggilan
-  eksplisit `sock.readMessages([key])`. Aplikasi memanfaatkan ini — lihat §3.
+- The `messages.upsert` event carries `{"messages": WAMessage[], "type": "notify" | "append"}`. `"notify"` = a live message (processed). `"append"` = history-sync backfill, SKIPPED, never replayed to the agent.
+- `WAMessage.key = {remoteJid, id, fromMe, participant?}`. A 1:1 chat uses `<digits>@s.whatsapp.net`. Groups use `@g.us`, broadcast `status@broadcast`, newsletter `@newsletter`, and LID `@lid` (cannot be mapped to E.164).
+- The customer's text lives in `message.conversation` OR `message.extendedTextMessage.text`. Other content types (image, document) carry no processable text at this milestone.
+- Read receipts are NOT automatic: Baileys sends them only through an explicit `sock.readMessages([key])` call. The app relies on this (see §3).
 
 ## 3. Inbound: `POST /webhooks/whatsapp/events`
 
-Bridge meneruskan payload `messages.upsert` MENTAH (tidak dinormalisasi).
-Aplikasi memproses dan menjawab per pesan:
+The bridge forwards the raw `messages.upsert` payload (not normalized). The app processes and answers per message:
 
 ```json
 {
@@ -41,26 +33,15 @@ Aplikasi memproses dan menjawab per pesan:
 }
 ```
 
-- `status` : `processed` | `duplicate` | `unknown_sender` |
-  `identity_mismatch` (nomor kini milik pelanggan lain: berhenti + handoff,
-  transkrip milik pelanggan tertaut, link tidak pernah ditimpa) |
-  `human_handling` | `handoff` | `deferred` (persetujuan pesanan masih
-  `pending_delivery`: pesan menunggu, diproses ulang setelah aktivasi) |
-  `agent_error` | `skipped:<alasan>` (backfill, echo keluar
-  sendiri, grup, broadcast, newsletter, LID, tanpa teks, bentuk invalid).
-- `mark_read: false` = aplikasi MEMERINTAHKAN bridge menahan read receipt:
-  jangan panggil `sock.readMessages` untuk pesan ini. Aplikasi hanya
-  mengizinkan receipt setelah agen benar-benar memproses pesan. Pesan saat
-  handoff/unknown sender tetap terlihat belum dibaca oleh pelanggan.
-- `replied: true` hanya bila balasan dikirim (atau dikirim dengan hasil
-  `unknown`).
+- `status`: `processed` | `duplicate` | `unknown_sender` | `identity_mismatch` (the number now belongs to a different customer: stop + handoff, the transcript belongs to the linked customer, the link is never overwritten) | `human_handling` | `handoff` | `deferred` (an order approval is still `pending_delivery`: the message waits and is reprocessed after activation) | `agent_error` | `skipped:<reason>` (backfill, own outgoing echo, group, broadcast, newsletter, LID, no text, invalid shape).
+- `mark_read: false` = the app ORDERS the bridge to hold the read receipt: do not call `sock.readMessages` for this message. The app allows a receipt only after the agent actually processed the message. A message under handoff or from an unknown sender stays unread to the customer.
+- `replied: true` only when a reply was sent (or sent with an `unknown` result).
 
-Idempotensi inbound ditangani aplikasi lewat `UNIQUE (messages.external_message_id)`
-— bridge boleh mengirim ulang event yang sama dengan aman.
+Inbound idempotency is handled by the app through `UNIQUE (messages.external_message_id)`. The bridge may safely resend the same event.
 
 ## 4. Outbound: `POST {WHATSAPP_BRIDGE_URL}/messages`
 
-Aplikasi → bridge, sekali per pesan keluar:
+App → bridge, once per outgoing message:
 
 ```json
 POST /messages
@@ -68,103 +49,70 @@ Authorization: Bearer {WHATSAPP_BRIDGE_TOKEN}
 { "outbox_id": "<uuid>", "to": "+6281234567890", "text": "..." }
 ```
 
-`outbox_id` adalah kunci rekonsiliasi: bridge HARUS memakainya pada laporan
-delivery (§5). WhatsApp sendiri tidak punya idempotency key sisi penerima.
+`outbox_id` is the reconciliation key: the bridge MUST use it in the delivery report (§5). WhatsApp itself has no receiver-side idempotency key.
 
-Respons 2xx dari bridge:
+A 2xx response from the bridge:
 
 ```json
 { "status": "sent", "error": null }
 ```
 
-- `"sent"` HANYA boleh dijawab setelah `sock.sendMessage` resolve (pesan
-  diterima dan dienkripsi untuk pengiriman). Level perangkat (DELIVERY_ACK,
-  READ) datang BELAKANGAN lewat webhook delivery.
-- `"failed"` + `error` = bridge/WhatsApp menolak; boleh dicoba ulang aplikasi
-  dalam budget attempt.
+- `"sent"` may be answered ONLY after `sock.sendMessage` resolves (the message was accepted and encrypted for delivery). Device-level receipts (DELIVERY_ACK, READ) arrive LATER through the delivery webhook.
+- `"failed"` + `error` = the bridge or WhatsApp refused the message. The app may retry within the attempt budget.
 
-Pemetaan hasil sisi adapter (aturan keamanan inti outbox):
+The adapter result mapping (the core outbox safety rule):
 
-| Kondisi | Status aplikasi | Dicoba ulang otomatis? |
+| Condition | App status | Auto-retried? |
 |---|---|---|
-| Respons `"sent"` | `sent` | tidak perlu |
-| Respons `"failed"` | `failed` | ya, ≤ 3 attempt |
-| HTTP 4xx (bridge menolak permintaannya sendiri: auth, validasi) | `failed` | ya |
-| HTTP 5xx (bridge gagal saat memproses: pesan MUNGKIN sudah ke WhatsApp) | `unknown` | TIDAK PERNAH |
-| Koneksi tak pernah terbangun (ConnectError) | `failed` | ya |
-| Respons hilang setelah permintaan terbang (timeout baca, reset, badan 2xx tak terparse) | `unknown` | TIDAK PERNAH |
+| Response `"sent"` | `sent` | not needed |
+| Response `"failed"` | `failed` | yes, ≤ 3 attempts |
+| HTTP 4xx (the bridge rejected the request itself: auth, validation) | `failed` | yes |
+| HTTP 5xx (the bridge failed while processing: the message MAY have reached WhatsApp) | `unknown` | NEVER |
+| Connection never established (ConnectError) | `failed` | yes |
+| Response lost after the request left (read timeout, reset, unparseable 2xx body) | `unknown` | NEVER |
 
-`unknown` tidak pernah di-resend otomatis: pesan mungkin sudah sampai;
-resend buta bisa menduplikasi pesan ke pelanggan. Penyelesaiannya hanya
-rekonsiliasi (§5).
+`unknown` is never auto-resent: the message may have arrived, and a blind resend could duplicate it to the customer. The only resolution is reconciliation (§5).
 
-Pemetaan 4xx/5xx ini kontrak: hanya jaminan eksplisit bridge "tidak
-terkirim sebelum 5xx" yang boleh memindahkan 5xx ke `failed`. Kontrak ini
-tidak membawa jaminan itu.
+The 4xx/5xx mapping is a contract. Only an explicit bridge guarantee that a message was not sent before a 5xx may move 5xx to `failed`. This contract carries no such guarantee.
 
 ## 5. Delivery report: `POST /webhooks/whatsapp/delivery`
 
-Bridge melaporkan hasil final per pesan keluar, kapan pun itu tiba:
+The bridge reports the final result per outgoing message, whenever it arrives:
 
 ```json
 X-Webhook-Secret: {WHATSAPP_WEBHOOK_SECRET}
 { "outbox_id": "<uuid>", "status": "delivered" | "failed", "error": null }
 ```
 
-- `delivered` merekonsiliasi baris `pending`/`sending`/`unknown` menjadi
-  `sent`, dan MENGAKTIFKAN persetujuan pesanan yang terikat pada pesan
-  ringkasan itu (`order_approvals.pending_delivery → active`) — dalam
-  transaksi yang SAMA dengan transisi status (tidak bisa terpisah oleh
-  crash). Aktivasi juga memicu pemrosesan ulang pesan yang sebelumnya
-  DITUNDA karena persetujuan masih `pending_delivery` (konfirmasi cepat
-  pelanggan diproses tepat satu kali, hanya setelah persetujuannya ada).
-- `failed` merekonsiliasi menjadi `failed` (terminal: adapter tidak
-  mengirim ulang; operator yang memutuskan).
-- Baris yang sudah terminal (`sent`/`failed`) menjawab `already_final` —
-  laporan duplikat/terlambat adalah no-op.
+- `delivered` reconciles a `pending`/`sending`/`unknown` row to `sent`, and ACTIVATES the order approval bound to that summary message (`order_approvals.pending_delivery → active`) in the SAME transaction as the status transition (a crash cannot split them). Activation also triggers reprocessing of messages previously DEFERRED while the approval was still `pending_delivery` (a quick customer confirmation is processed exactly once, only after the approval exists).
+- `failed` reconciles the row to `failed` (terminal: the adapter does not resend, and the operator decides).
+- A row that is already terminal (`sent`/`failed`) answers `already_final`. A duplicate or late report is a no-op.
 
-### 5a. Klaim `sending` basi (lease `claimed_at`)
+### 5a. The stale `sending` claim (the `claimed_at` lease)
 
-Setiap dispatch mengklaim baris `sending` + stempel waktu `claimed_at`
-(lease). Baris `sending` yang lease-nya kedaluwarsa
-(`OUTBOX_STALE_SENDING_SECONDS`, default 60 dtk) = dispatcher yang mati
-di tengah pengiriman: hasilnya TIDAK bisa ditentukan, jadi sweep
-rekonsiliasi menjadikannya `unknown` — tidak pernah resend otomatis,
-hanya delivery report (atau operator) yang menyelesaikannya. Sweep ini
-berjalan otomatis di awal setiap dispatch.
+Every dispatch claims a `sending` row and stamps `claimed_at` (a lease). A `sending` row whose lease expired (`OUTBOX_STALE_SENDING_SECONDS`, default 60 s) means a dispatcher died mid-send: the result CANNOT be determined, so the reconciliation sweep moves the row to `unknown`. Such a row is never auto-resent. Only a delivery report (or an operator) resolves it. The sweep runs automatically at the start of every dispatch.
 
-## 6. Keamanan (diimplementasi, remediasi Phase 3)
+## 6. Security (implemented, Phase 3 remediation)
 
-- Token Bearer aplikasi→bridge: `WHATSAPP_BRIDGE_TOKEN` (bridge
-  memverifikasi). Produksi dengan `WHATSAPP_BRIDGE_URL` tanpa token
-  ditolak saat startup.
-- Webhook bridge→aplikasi (`/webhooks/whatsapp/*`): shared secret
-  `WHATSAPP_WEBHOOK_SECRET` di header `X-Webhook-Secret`, diperbandingkan
-  constant-time (`hmac.compare_digest`).
-- Rute operator (`/conversations/*`, `/outbox/dispatch`): shared token
-  `OPERATOR_API_TOKEN` di header `X-Operator-Token`, sama constant-time.
-- Fail-closed: secret kosong di `APP_ENVIRONMENT=production` (default)
-  = SEMUA request ditolak 401. `APP_ENVIRONMENT=development` = bypass
-  terdokumentasi (hanya untuk dev).
-- Ini batas autentikasi, bukan sistem identitas: belum ada akun
-  operator per-orang, proteksi replay, atau protokol rotasi. Jalur
-  upgrade: mTLS/HMAC-per-bridge dengan timestamp, akun operator nyata.
-- Rute operator menunggu lock per-telepon dengan BUDGET terbatas (10
-  dtk): bila alur agen sedang berjalan, rute menjawab 503 `conversation
-  busy` (tidak ada yang termutasi) alih-alih menggantung hingga timeout
-  provider 120 dtk.
+- App → bridge Bearer token: `WHATSAPP_BRIDGE_TOKEN` (verified by the bridge). Production with `WHATSAPP_BRIDGE_URL` but no token is rejected at startup.
+- Bridge → app webhooks (`/webhooks/whatsapp/*`): shared secret `WHATSAPP_WEBHOOK_SECRET` in the `X-Webhook-Secret` header, compared constant-time (`hmac.compare_digest`).
+- Operator routes (`/conversations/*`, `/outbox/dispatch`): shared token `OPERATOR_API_TOKEN` in the `X-Operator-Token` header, also constant-time.
+- Fail-closed: an empty secret under `APP_ENVIRONMENT=production` (the default) rejects EVERY request with 401. `APP_ENVIRONMENT=development` is a documented bypass (dev only).
+- This is an authentication boundary, not an identity system: no per-operator accounts, replay protection, or rotation protocol yet. Upgrade path: mTLS or per-bridge HMAC with timestamps, plus real operator accounts.
+- Operator routes wait on the per-phone lock with a bounded budget (10 s): if an agent flow is running, the route answers 503 `conversation busy` (nothing mutated) instead of blocking for the agent provider's 120 s read timeout.
 
-## 7. Konfigurasi
+## 7. Configuration
 
 ```
-APP_ENVIRONMENT=production            # atau development (bypass terdokumentasi)
-WHATSAPP_BRIDGE_URL=                  # kosong = hanya inbound; balasan menunggu di outbox
-WHATSAPP_BRIDGE_TOKEN=                # WAJIB di produksi bila URL terisi
+APP_ENVIRONMENT=production            # or development (documented bypass)
+WHATSAPP_BRIDGE_URL=                  # empty = inbound only, replies wait in the outbox
+WHATSAPP_BRIDGE_TOKEN=                # REQUIRED in production when the URL is set
 WHATSAPP_BRIDGE_TIMEOUT_SECONDS=15.0
-WHATSAPP_WEBHOOK_SECRET=              # X-Webhook-Secret; kosong di produksi = 401 semua
-OPERATOR_API_TOKEN=                   # X-Operator-Token; kosong di produksi = 401 semua
-OUTBOX_STALE_SENDING_SECONDS=60.0     # lease klaim 'sending' basi
+WHATSAPP_WEBHOOK_SECRET=              # X-Webhook-Secret, empty in production = 401 for everything
+OPERATOR_API_TOKEN=                   # X-Operator-Token, empty in production = 401 for everything
+OUTBOX_STALE_SENDING_SECONDS=60.0     # stale 'sending' claim lease
 ```
 
-URL kosong berarti `WhatsAppAdapter` tidak dibangun: `dispatch_pending`
-menjawab 0, tidak ada yang dikirim — mode inbound-only yang aman.
+An empty URL means the `WhatsAppAdapter` is not built: `dispatch_pending` answers 0 and nothing is sent. A safe inbound-only mode.
+
+The contract in §3–§5 above stays authoritative for Phase 4. The bridge implementation is documented separately in `docs/notes/P4-whatsapp-bridge.md`.

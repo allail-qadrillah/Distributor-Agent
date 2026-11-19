@@ -168,6 +168,12 @@ class FakeMessageRepository:
         self.rows[row.id] = row
         return row
 
+    def get_by_external_id(self, conn, external_message_id):
+        for row in self.rows.values():
+            if row.external_message_id == external_message_id:
+                return row
+        return None
+
     def append_message(self, conn, conversation_id, message: MessageInsert):
         seq, now = self._next()
         row = ConversationMessageResponse(

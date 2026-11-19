@@ -87,8 +87,14 @@ class MessageProcessor:
         )
         conversation = inbound.conversation
         if inbound.message is None:
+            # duplicate claim: the stored record authorizes a repeat read
+            # receipt only when it was actually read (Phase 4 §5); an
+            # unread or cross-conversation record stays unauthorized
+            stored = inbound.duplicate
             return ProcessingOutcome(
-                status="duplicate", mark_read=False, conversation_id=conversation.id
+                status="duplicate",
+                mark_read=stored is not None and stored.status == "read",
+                conversation_id=conversation.id,
             )
         if inbound.customer is None:
             # unknown sender: stored unread, no reply, no read receipt,

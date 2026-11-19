@@ -3,6 +3,8 @@
 Read `docs/PROJECT_CONTEXT.md` before changing project structure or runtime behavior.
 Read relevant entries in `docs/DECISIONS.md` and `docs/TASKS.md` before continuing related work.
 
+pstack is scoped to this repository: the plugin comes from `opencode.jsonc`, and its model sheet is `.opencode/pstack-models.md`, loaded through that file's `instructions` array.
+
 Keep project memory factual and short. Update the matching `docs/` file when a durable architecture fact, decision, or task state changes. Do not store secrets or copy facts that code and tests already make clear.
 
 Verify documented commands and architecture claims against the repository before recording them.

@@ -1,0 +1,14 @@
+.venv
+node_modules
+data
+.env
+.git
+.audit
+.opencode
+tests
+docs
+services
+*.md
+.ruff_cache
+.pytest_cache
+__pycache__

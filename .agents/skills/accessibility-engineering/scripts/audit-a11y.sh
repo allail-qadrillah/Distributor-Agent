@@ -96,16 +96,12 @@ else
 fi
 PA11Y_STATUS=$(report_status pa11y "$TEMP_DIR/pa11y-report.json" "$PA11Y_EXIT")
 
-# A URL audit promises both engines. A valid report is the success signal because
-# pa11y may return non-zero when it found violations. Never turn a partial run
-# into a clean result just because the remaining engine returned an empty list.
 if [ "$PA11Y_STATUS" != "completed" ] || { [ "$MODE" = "url" ] && [ "$AXE_STATUS" != "completed" ]; }; then
   echo "$SCRIPT_NAME: incomplete audit; refusing to report a violation total" >&2
   echo "$SCRIPT_NAME: tool status: @axe-core/cli@$AXE_VERSION=$AXE_STATUS (exit $AXE_EXIT), pa11y@$PA11Y_VERSION=$PA11Y_STATUS (exit $PA11Y_EXIT)" >&2
   exit 1
 fi
 
-# Merge results into structured JSON output
 RESULT_FILE="$TEMP_DIR/result.json"
 
 cat > "$RESULT_FILE" << RESULT_EOF
@@ -127,7 +123,6 @@ cat > "$RESULT_FILE" << RESULT_EOF
 }
 RESULT_EOF
 
-# Parse axe results
 if [ -f "$TEMP_DIR/axe-report.json" ]; then
   node -e "
     const fs = require('fs');
@@ -169,7 +164,6 @@ if [ -f "$TEMP_DIR/axe-report.json" ]; then
   "
 fi
 
-# Parse pa11y results
 if [ -f "$TEMP_DIR/pa11y-report.json" ]; then
   node -e "
     const fs = require('fs');
@@ -195,7 +189,6 @@ if [ -f "$TEMP_DIR/pa11y-report.json" ]; then
         });
       }
     } catch (e) {
-      // Same as the axe block: an empty report is covered by the guard above.
       if (fs.statSync('$TEMP_DIR/pa11y-report.json').size > 0) {
         console.error('$SCRIPT_NAME: pa11y-report.json is not valid JSON: ' + e.message);
         process.exit(1);

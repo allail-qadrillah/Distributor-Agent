@@ -69,6 +69,24 @@ def test_ingest_duplicate_external_id_returns_none(service) -> None:
     assert duplicate.message is None
 
 
+def test_ingest_duplicate_returns_existing_record(service) -> None:
+    first = service.ingest_inbound(PHONE, "WA-1", "pesan")
+    duplicate = service.ingest_inbound(PHONE, "WA-1", "pesan")
+    assert duplicate.message is None
+    assert duplicate.duplicate is not None
+    assert duplicate.duplicate.id == first.message.id
+    assert duplicate.duplicate.conversation_id == first.conversation.id
+    assert duplicate.duplicate.status == "unread"
+
+
+def test_ingest_duplicate_other_conversation_hides_existing(service) -> None:
+    service.ingest_inbound(PHONE, "WA-1", "pesan")
+    service.ingest_inbound("+628111122222", "WA-2", "pesan lain")
+    cross = service.ingest_inbound("+628111122222", "WA-1", "pesan")
+    assert cross.message is None
+    assert cross.duplicate is None
+
+
 def test_ingest_unknown_sender_has_no_customer(service) -> None:
     result = service.ingest_inbound(PHONE, "WA-9", "halo")
     assert result.customer is None

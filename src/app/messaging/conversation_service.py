@@ -29,6 +29,9 @@ class InboundResult:
     message: ConversationMessageResponse | None
     customer: CustomerResponse | None
     identity_mismatch: bool = False
+    # Phase 4: the stored record behind a lost duplicate claim. Only set
+    # when it belongs to THIS conversation; never set for a new message.
+    duplicate: ConversationMessageResponse | None = None
 
 
 @dataclass(frozen=True)
@@ -80,7 +83,12 @@ class ConversationService:
             message = self._messages.claim_inbound(
                 conn, conversation.id, external_message_id, text
             )
-        return InboundResult(conversation, message, customer, mismatch)
+            duplicate = None
+            if message is None:
+                stored = self._messages.get_by_external_id(conn, external_message_id)
+                if stored is not None and stored.conversation_id == conversation.id:
+                    duplicate = stored
+        return InboundResult(conversation, message, customer, mismatch, duplicate)
 
     def customer_by_phone(self, phone: str) -> CustomerResponse | None:
         with transaction() as conn:

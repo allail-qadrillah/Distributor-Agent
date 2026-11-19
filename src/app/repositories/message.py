@@ -118,6 +118,17 @@ class MessageRepository:
             row = cur.fetchone()
         return ConversationMessageResponse.model_validate(row) if row else None
 
+    def get_by_external_id(
+        self, conn: psycopg.Connection, external_message_id: str
+    ) -> ConversationMessageResponse | None:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_COLUMNS} FROM messages WHERE external_message_id = %s",
+                (external_message_id,),
+            )
+            row = cur.fetchone()
+        return ConversationMessageResponse.model_validate(row) if row else None
+
     def list_unread_inbound(
         self, conn: psycopg.Connection, conversation_id: UUID
     ) -> list[ConversationMessageResponse]:
