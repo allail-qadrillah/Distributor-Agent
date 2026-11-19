@@ -1,16 +1,10 @@
-"""Application-layer (messaging) exceptions.
-
-Mirrors the service/agents convention: domain errors the API layer can
-map to responses; psycopg and provider exceptions propagate untouched.
-"""
-
 from uuid import UUID
 
 from app.schemas.conversation import ConversationState
 
 
 class MessagingError(Exception):
-    """Base for messaging workflow failures."""
+    pass
 
 
 class ConversationNotFoundError(MessagingError):
@@ -20,8 +14,6 @@ class ConversationNotFoundError(MessagingError):
 
 
 class InvalidConversationStateError(MessagingError):
-    """The conversation is not in a state that allows the transition."""
-
     def __init__(
         self,
         conversation_id: UUID,

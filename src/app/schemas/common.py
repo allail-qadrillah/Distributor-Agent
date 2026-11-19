@@ -1,10 +1,3 @@
-"""Shared annotated types and base config for all schemas.
-
-Validation mirrors the database constraints in
-src/app/database/migrations/001_initial_schema.sql — single source, no
-duplicated rules in domain modules.
-"""
-
 from decimal import Decimal
 from typing import Annotated
 
@@ -26,13 +19,5 @@ PhoneStr = Annotated[
 
 
 class BaseSchema(BaseModel):
-    """Base for all schemas.
-
-    extra="forbid": unknown input fields are rejected, so DB-generated or
-    system-managed values (subtotal, outstanding_balance, status...) can
-    never be smuggled in as user input.
-
-    from_attributes=True: response schemas can be built from DB row objects.
-    """
 
     model_config = ConfigDict(extra="forbid", from_attributes=True)

@@ -1,15 +1,3 @@
-"""Agent instructions, the system prompt that defines the agent's role.
-
-Pure data: no orchestration, no provider knowledge. The orchestrator
-prepends this as the single system message; application input can never
-inject or override it (AgentInput rejects system-role messages).
-
-Behavioral constraints (approved rules, keep verbatim intent when
-editing): the backend is authoritative; the agent never invents prices
-or stock; the agent never claims a business operation succeeded without
-a successful backend result.
-"""
-
 AGENT_INSTRUCTIONS = """\
 Kamu adalah asisten penjualan untuk pelanggan distributor FMCG di \
 Indonesia. Tugasmu membantu pelanggan mencari produk, mengecek harga dan \

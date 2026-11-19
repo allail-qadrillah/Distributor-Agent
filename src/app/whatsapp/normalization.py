@@ -1,23 +1,3 @@
-"""Inbound event normalization: raw Baileys messages.upsert -> strict
-WhatsAppInboundMessage list.
-
-Verified Baileys contract (WhiskeySockets/Baileys, checked 2026-11-18):
-- event payload {"messages": WAMessage[], "type": "notify" | "append"}:
-  "notify" = live delivery (process), "append" = history backfill
-  (skip: old messages must never be replayed into the agent).
-- WAMessage.key: {remoteJid, id, fromMe, participant?}; 1:1 chats use
-  "<digits>@s.whatsapp.net", groups "@g.us", broadcasts
-  "status@broadcast", newsletters "@newsletter".
-- text content: message.conversation or
-  message.extendedTextMessage.text; other content types carry no usable
-  text for this milestone.
-
-This module is a pure function over dicts: tolerant of extra protocol
-fields, strict about what it accepts (E.164 phone after JID
-conversion, non-blank text, non-blank external id). Skipped messages
-carry a reason so the webhook can answer the bridge precisely.
-"""
-
 from dataclasses import dataclass
 
 from app.whatsapp.schemas import WhatsAppInboundMessage
@@ -34,17 +14,12 @@ _SKIP_INVALID = "invalid_event_shape"
 
 @dataclass(frozen=True)
 class NormalizedInbound:
-    """One event entry: either a usable customer message or a skip
-    reason. The webhook reports both; only usable messages are
-    processed."""
 
     message: WhatsAppInboundMessage | None
     skip_reason: str | None
 
 
 def normalize_inbound_event(raw: object) -> list[NormalizedInbound]:
-    """Normalize one raw messages.upsert payload. Never raises on event
-    shape: a malformed event is reported as a skip, not an error."""
     if not isinstance(raw, dict):
         return [NormalizedInbound(message=None, skip_reason=_SKIP_INVALID)]
     event_type = raw.get("type")

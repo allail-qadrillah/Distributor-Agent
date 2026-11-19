@@ -1,31 +1,3 @@
-"""Order repository — database access for orders and order_items.
-
-Rules (same conventions as other repositories):
-- Database operations only. No business rules: no price resolution, no
-  inventory reservation, no credit logic, no status transitions, no LLM,
-  no API.
-- Parameterized SQL only (never string-formatted).
-- Returns Pydantic schemas, None for missing single records, lists for
-  children; never raw cursors.
-- Psycopg exceptions propagate (never swallowed) — user-safe mapping is
-  the API layer's job.
-
-Connection injection (deliberate difference from the other repositories):
-- Every method receives the caller's connection and uses it for all
-  operations. This module never opens a connection and never manages
-  transaction lifecycle: no BEGIN, no COMMIT, no ROLLBACK. The caller
-  (future OrderService) owns the transaction so multi-table writes
-  (orders + order_items + total_amount) stay atomic.
-- The connection must use dict_row (app.database.connection.connect and
-  transaction() provide it).
-
-Generated values stay generated:
-- subtotal is a database generated column: read back via RETURNING,
-  never computed in Python.
-- order_number, status, total_amount, timestamps come from database
-  defaults; the repository never writes them.
-"""
-
 from collections.abc import Sequence
 from decimal import Decimal
 from uuid import UUID
@@ -86,14 +58,6 @@ class OrderRepository:
     def create_order(
         self, conn: psycopg.Connection, order: OrderCreate
     ) -> OrderResponse:
-        """Insert one draft order row; return it as stored.
-
-        order.items are NOT written here — create_order_items() inserts
-        them; OrderCreate is accepted whole because it is the draft-order
-        input. status, order_number, total_amount and timestamps come
-        from database defaults. No commit/rollback: the caller owns the
-        transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_INSERT_ORDER, (order.customer_id, order.notes))
             row = cur.fetchone()
@@ -102,16 +66,6 @@ class OrderRepository:
     def create_order_items(
         self, conn: psycopg.Connection, order_id: UUID, items: Sequence[OrderItemInsert]
     ) -> list[OrderItemResponse]:
-        """Insert all order items; return them as stored by the database.
-
-        unit_price is the service-resolved snapshot; subtotal comes back
-        from the generated column via RETURNING — never computed here.
-        One INSERT..RETURNING per item keeps the 1:1 input->row mapping:
-        psycopg 3.3's executemany(returning=True) only exposes the first
-        statement's rows. ponytail: swap for a single INSERT..SELECT
-        unnest(...) RETURNING if item counts ever make the round trips
-        matter. No commit/rollback: the caller owns the transaction.
-        """
         with conn.cursor() as cur:
             rows = []
             for item in items:
@@ -125,14 +79,6 @@ class OrderRepository:
     def update_total_amount(
         self, conn: psycopg.Connection, order_id: UUID, total_amount: Decimal
     ) -> OrderResponse | None:
-        """Set the order's total; return the updated order, or None.
-
-        total_amount is the Decimal sum of the database-generated item
-        subtotals, bound as a parameter (numeric(14,2) precision). The
-        trg_orders_upd trigger refreshes updated_at. None means no order
-        with this id. No commit/rollback: the caller owns the
-        transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_UPDATE_TOTAL, (total_amount, order_id))
             row = cur.fetchone()
@@ -141,14 +87,6 @@ class OrderRepository:
     def get_for_update(
         self, conn: psycopg.Connection, order_id: UUID
     ) -> OrderDetailResponse | None:
-        """Return the order with this id plus its items, row-locked, or None.
-
-        The order row is locked FOR UPDATE (migration 001 lock order:
-        customer first, then order) and re-read as the latest committed
-        version after any lock wait. Items are read unlocked: no
-        implemented workflow mutates order_items of an existing order.
-        No commit/rollback: the caller owns the transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_GET_ORDER_FOR_UPDATE, (order_id,))
             order_row = cur.fetchone()
@@ -161,13 +99,6 @@ class OrderRepository:
     def sum_confirmed_totals(
         self, conn: psycopg.Connection, customer_id: UUID
     ) -> Decimal:
-        """SUM(total_amount) over the customer's confirmed orders.
-
-        0.00 when there are none. Excludes delivered orders (their total
-        lives in outstanding_balance) and cancelled ones. Money stays
-        Decimal end to end (numeric -> Decimal). No commit/rollback:
-        the caller owns the transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_SUM_CONFIRMED_TOTALS, (customer_id,))
             row = cur.fetchone()
@@ -176,14 +107,6 @@ class OrderRepository:
     def mark_confirmed(
         self, conn: psycopg.Connection, order_id: UUID
     ) -> OrderResponse | None:
-        """Guarded draft -> confirmed transition; return the order, or None.
-
-        Sets status='confirmed' and confirmed_at=now() (database clock)
-        only WHERE the current status is 'draft'. None means the row is
-        gone or no longer draft: the transition already happened or is
-        illegal — the caller decides which. No commit/rollback: the
-        caller owns the transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_MARK_CONFIRMED, (order_id,))
             row = cur.fetchone()
@@ -192,11 +115,6 @@ class OrderRepository:
     def get_by_id(
         self, conn: psycopg.Connection, order_id: UUID
     ) -> OrderDetailResponse | None:
-        """Return the order with this id plus its items, or None.
-
-        Two statements on the supplied connection: order and items read
-        inside the caller's transaction, so the result is consistent.
-        """
         with conn.cursor() as cur:
             cur.execute(_GET_ORDER, (order_id,))
             order_row = cur.fetchone()

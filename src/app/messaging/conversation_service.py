@@ -1,26 +1,3 @@
-"""ConversationService: persistence and reconstruction of one permanent
-conversation per WhatsApp phone.
-
-Workflows (one transaction each, services own the boundary):
-- ingest_inbound: resolve identity, get-or-create the conversation,
-  atomically claim the external message id. The claim INSERT is the
-  duplicate protection (ON CONFLICT DO NOTHING), not a SELECT-then-INSERT.
-- intent_context: the tail of the conversation (user and assistant text
-  turns only) for the intent classifier, newest last.
-- load_transcript: the full stored transcript as AgentMessage list, the
-  exact replay input for the next agent run (tool calls and tool results
-  included; pairing is revalidated by AgentInput).
-- persist_agent_run: append one run's new transcript messages and create
-  the outbox row for the outbound reply in the SAME transaction, so the
-  reply intent exists before anything is sent.
-- mark_message_read / transition_state / listing: read and guarded state
-  workflows for the processor and the API layer.
-
-Unknown sender retention: a conversation row exists per phone even with
-customer_id NULL; messages stay unread and are never replayed into an
-agent run (the processor refuses to run without a resolved customer).
-"""
-
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -47,12 +24,6 @@ from app.schemas.customer import CustomerResponse
 
 @dataclass(frozen=True)
 class InboundResult:
-    """Outcome of ingest_inbound. message is None for a duplicate external
-    message id (already stored; the caller must not process again).
-    identity_mismatch is True when the phone now resolves to a DIFFERENT
-    customer than the one the conversation is permanently linked to: the
-    caller must stop automatic processing and hand off (the persisted
-    transcript belongs to the linked customer, not the current sender)."""
 
     conversation: ConversationResponse
     message: ConversationMessageResponse | None
@@ -62,8 +33,6 @@ class InboundResult:
 
 @dataclass(frozen=True)
 class PersistedRun:
-    """One persisted agent run. outbound is the outbox row created for the
-    final assistant text (None when the run produced no reply text)."""
 
     messages: list[ConversationMessageResponse]
     outbound: OutboxMessageResponse | None
@@ -89,15 +58,6 @@ class ConversationService:
     def ingest_inbound(
         self, phone: str, external_message_id: str, text: str
     ) -> InboundResult:
-        """Resolve identity, ensure the conversation, claim the message.
-        The inbound row is persisted BEFORE any processing: an error later
-        never loses the message.
-
-        Identity invariant: once a conversation is linked to a customer,
-        that link is the identity of the transcript. If the phone now
-        resolves to a different registered customer, identity_mismatch is
-        True — the link is NEVER overwritten and the caller must stop
-        automatic processing (H4)."""
         with transaction() as conn:
             customer = self._identity.resolve(conn, phone)
             conversation = self._conversations.get_or_create_by_phone(
@@ -123,8 +83,6 @@ class ConversationService:
         return InboundResult(conversation, message, customer, mismatch)
 
     def customer_by_phone(self, phone: str) -> CustomerResponse | None:
-        """The registered customer for a phone (None = unknown sender).
-        Used when reprocessing stored messages, where ingest already ran."""
         with transaction() as conn:
             return self._identity.resolve(conn, phone)
 
@@ -138,10 +96,6 @@ class ConversationService:
     def intent_context(
         self, conversation_id: UUID, before_seq: int, limit: int
     ) -> list[tuple[str, str]]:
-        """Conversation context for the classifier: the last `limit` user
-        and assistant TEXT turns before seq, oldest first. Tool protocol
-        turns are deliberately excluded (intent needs meaning, not
-        mechanics)."""
         if limit <= 0:
             return []
         with transaction() as conn:
@@ -159,8 +113,6 @@ class ConversationService:
         ]
 
     def load_transcript(self, conversation_id: UUID) -> list[AgentMessage]:
-        """Full transcript, oldest first, as AgentMessage: the replayable
-        protocol including tool calls and tool results."""
         with transaction() as conn:
             rows = self._messages.list_by_conversation(conn, conversation_id)
         return [_to_agent_message(row) for row in rows]
@@ -168,15 +120,6 @@ class ConversationService:
     def load_agent_messages(
         self, conversation_id: UUID, limit: int
     ) -> list[AgentMessage]:
-        """Bounded replay input (M5): the NEWEST `limit` transcript
-        messages as AgentMessage, valid for AgentInput. The full
-        transcript stays persisted untouched (audit); only the agent's
-        view is bounded. Leading orphaned tool results (whose assistant
-        tool-call turn fell outside the window) are dropped so pairing
-        stays valid — AgentInput revalidates the rest.
-
-        ponytail: windowing in Python over one query; push the window
-        into SQL only if conversation length makes the full read hurt."""
         with transaction() as conn:
             rows = self._messages.list_by_conversation(conn, conversation_id)
         rows = rows[-limit:] if limit < len(rows) else rows
@@ -187,8 +130,6 @@ class ConversationService:
     def unread_inbound(
         self, conversation_id: UUID
     ) -> list[ConversationMessageResponse]:
-        """Stored unread INBOUND messages, oldest first: the deferred
-        messages waiting for approval activation / human action."""
         with transaction() as conn:
             return self._messages.list_unread_inbound(conn, conversation_id)
 
@@ -198,14 +139,6 @@ class ConversationService:
         new_messages: list[AgentMessage],
         draft_order_ids: list[UUID] | None = None,
     ) -> PersistedRun:
-        """Append one run's new transcript messages, create the outbound
-        intent, AND register the pending_delivery approvals for the run's
-        draft orders — all in ONE transaction (H3): a crash can never
-        leave a sent order summary without its approval row. User-role
-        messages are rejected: the inbound message was already claimed in
-        ingest_inbound. Drafts are registered only when a summary reply
-        exists (approvals are bound to the delivery of that exact
-        message; no reply text means nothing to deliver)."""
         drafts = draft_order_ids or []
         inserts = [_to_insert(m) for m in new_messages]
         with transaction() as conn:
@@ -256,8 +189,6 @@ class ConversationService:
         to_state: ConversationState,
         reason: str | None = None,
     ) -> ConversationResponse:
-        """Checked + guarded transition: not-found raises, a wrong current
-        state raises, the guarded UPDATE decides under concurrency."""
         with transaction() as conn:
             current = self._conversations.get_by_id(conn, conversation_id)
             if current is None:
@@ -280,9 +211,6 @@ class ConversationService:
 
 
 def _to_agent_message(row: ConversationMessageResponse) -> AgentMessage:
-    """Stored row -> protocol message. Tool calls ride as plain dicts from
-    jsonb; AgentMessage revalidates the full per-role shape, so a corrupt
-    store fails here, loudly, instead of at the provider."""
     return AgentMessage(
         role=row.role,
         content=row.content,

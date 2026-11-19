@@ -1,23 +1,3 @@
-"""Product repository — database access for products and product aliases.
-
-Rules (same conventions as CustomerRepository):
-- Database operations only. No business rules: no pricing, no inventory,
-  no order workflows, no LLM, no API.
-- Parameterized SQL only (never string-formatted).
-- Returns Pydantic schemas, None for missing single records, lists for
-  searches; never raw cursors.
-- Psycopg exceptions propagate (never swallowed) — user-safe mapping is
-  the API layer's job.
-
-Connection injection (same contract as InventoryRepository/OrderRepository):
-- Every method receives the caller's connection and uses it for all
-  operations. This module never opens a connection and never manages
-  transaction lifecycle: no BEGIN, no COMMIT, no ROLLBACK, no close. The
-  caller owns the transaction.
-- The connection must use dict_row (app.database.connection.connect and
-  transaction() provide it).
-"""
-
 from uuid import UUID
 
 import psycopg
@@ -52,7 +32,6 @@ ORDER BY p.sku
 
 
 def _escape_like(text: str) -> str:
-    """Escape LIKE/ILIKE wildcards so user input cannot broaden the match."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -60,21 +39,12 @@ class ProductRepository:
     def get_by_id(
         self, conn: psycopg.Connection, product_id: UUID
     ) -> ProductResponse | None:
-        """Return the product with this id, or None.
-
-        No commit/rollback: the caller owns the transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_GET_BY_ID, (product_id,))
             row = cur.fetchone()
         return ProductResponse.model_validate(row) if row else None
 
     def get_by_sku(self, conn: psycopg.Connection, sku: str) -> ProductResponse | None:
-        """Return the product with this exact sku, or None.
-
-        Case-sensitive equality (products.sku UNIQUE), any is_active
-        value. No commit/rollback: the caller owns the transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_GET_BY_SKU, (sku,))
             row = cur.fetchone()
@@ -83,16 +53,6 @@ class ProductRepository:
     def search_by_exact_sku(
         self, conn: psycopg.Connection, sku: str
     ) -> list[ProductResponse]:
-        """Return active products whose sku matches exactly, or [].
-
-        Case-insensitive exact match (lower(sku) = lower(input)): no
-        partial matching, no wildcards. Active products only — the
-        inactive filter is deliberately stricter than get_by_sku because
-        lookups for customer-facing search must not surface them.
-        Multiple rows only when distinct SKUs differ in casing (the
-        UNIQUE constraint is case-sensitive). No commit/rollback: the
-        caller owns the transaction.
-        """
         with conn.cursor() as cur:
             cur.execute(_SEARCH_BY_EXACT_SKU, (sku,))
             rows = cur.fetchall()
@@ -101,11 +61,6 @@ class ProductRepository:
     def search_by_name_or_alias(
         self, conn: psycopg.Connection, query: str
     ) -> list[ProductResponse]:
-        """Case-insensitive partial search over product names and aliases.
-
-        Unique, active products only; empty list when nothing matches.
-        No commit/rollback: the caller owns the transaction.
-        """
         pattern = f"%{_escape_like(query)}%"
         with conn.cursor() as cur:
             cur.execute(_SEARCH, (pattern, pattern))

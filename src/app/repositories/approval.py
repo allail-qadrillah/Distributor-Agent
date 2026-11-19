@@ -1,11 +1,3 @@
-"""Order approval repository — SQL for the order_approvals table.
-
-Approval lifecycle (policy lives in ApprovalManager):
-pending_delivery -> active (only on confirmed delivery of the summary
-message) -> consumed (single-use, guarded). UNIQUE (order_id) makes one
-approval row per order, ever.
-"""
-
 from uuid import UUID
 
 import psycopg
@@ -33,9 +25,6 @@ class ApprovalRepository:
         order_id: UUID,
         delivery_message_id: UUID,
     ) -> OrderApprovalResponse | None:
-        """Register approval intent for one order awaiting its summary
-        delivery. None = an approval row for this order already exists
-        (idempotent re-run, the first row keeps its own delivery link)."""
         with conn.cursor() as cur:
             cur.execute(
                 _INSERT,
@@ -51,9 +40,6 @@ class ApprovalRepository:
     def activate_for_delivery(
         self, conn: psycopg.Connection, delivery_message_id: UUID
     ) -> list[OrderApprovalResponse]:
-        """Activate every pending approval whose summary message was
-        confirmed delivered. Guarded from pending_delivery: activation
-        happens exactly once, only from the delivered state."""
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -70,8 +56,6 @@ class ApprovalRepository:
     def latest_active_by_conversation(
         self, conn: psycopg.Connection, conversation_id: UUID
     ) -> OrderApprovalResponse | None:
-        """The most recently activated approval for the conversation; the
-        order the customer is most plausibly answering."""
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -88,9 +72,6 @@ class ApprovalRepository:
     def consume(
         self, conn: psycopg.Connection, conversation_id: UUID, order_id: UUID
     ) -> OrderApprovalResponse | None:
-        """Single-use consumption: guarded from 'active'. None means the
-        approval was not active (already consumed, still pending delivery,
-        or never existed for this conversation+order)."""
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -132,9 +113,6 @@ class ApprovalRepository:
     def has_pending_for_conversation(
         self, conn: psycopg.Connection, conversation_id: UUID
     ) -> bool:
-        """True when any approval of this conversation still awaits its
-        summary delivery: the deferral window (M1). A reply that arrives
-        in this window is deferred, not lost."""
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM order_approvals "

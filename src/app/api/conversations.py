@@ -1,19 +1,3 @@
-"""Conversation routes: operator surface for the messaging layer.
-
-Read operations (listing, detail, message history) and the human
-handoff lifecycle (handoff, takeover, resume). No CRUD for customers,
-products, prices, inventory, or orders: those belong to their own
-future routers, this is the Phase 3 workflow only.
-
-AUTHORIZATION REQUIREMENT (not implemented): handoff/takeover/resume
-are human operations. There is no operator identity or auth contract in
-this project yet, so these endpoints are open. Before any real
-deployment they MUST sit behind operator authentication and
-authorization; the boundary is deliberately thin (one call into
-HandoffManager) so the auth layer wraps the route without touching the
-state machine.
-"""
-
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query

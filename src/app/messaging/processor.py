@@ -1,43 +1,3 @@
-"""MessageProcessor: the end-to-end inbound workflow.
-
-Flow (one inbound WhatsApp message, normalized by the adapter boundary):
-
-    advisory lock per phone
-    -> ingest (identity + conversation + atomic message claim)
-    -> duplicate? stop (no second processing)
-    -> unknown sender? stop (stored unread, no reply, no read receipt)
-    -> identity mismatch? hand off, stop (H4: the transcript belongs to
-       the LINKED customer, never to the current sender)
-    -> state not active? stop (stored unread, human handling)
-    -> approval pending delivery? DEFER (M1): stored unread, no agent
-       run; reprocessed only when the approval becomes active
-    -> intent gate (separate classifier, fail closed)
-        -> handoff: set needs_human, stop (unread, no reply, no receipt)
-    -> agent run (bounded transcript replay + trusted ToolContext; the
-       approval of the latest active order injected as the ONE
-       approved_order_id)
-        -> AgentError: persist the partial transcript, no reply, no
-           retry, message stays UNREAD (M2)
-    -> persist the run transcript + outbox intent + pending_delivery
-       approvals for the run's drafts (ONE transaction, H3)
-    -> consume approvals for orders the run confirmed
-    -> mark the inbound message read (M2: only after success)
-    -> recheck state; if still active, dispatch the outbox (send the
-       reply via the adapter; activation of approvals reprocesses any
-       messages deferred behind them)
-
-Hard stops are enforced HERE (application code), never by prompt text:
-unknown sender, identity mismatch, non-active conversation state, the
-deferral window, and a gate refusal all happen before the orchestrator
-sees a message.
-
-Ordering guarantee (H2): the per-phone advisory lock serializes inbound
-processing and operator handoff transitions. A handoff that arrives
-mid-run waits; the run completes (reply included), then the transition
-applies; messages after the transition hit the hard stop. The state is
-rechecked before dispatch as defense in depth.
-"""
-
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -79,12 +39,6 @@ IDENTITY_MISMATCH_REASON = "identity_mismatch"
 
 @dataclass(frozen=True)
 class ProcessingOutcome:
-    """The adapter-facing result. mark_read tells the WhatsApp bridge
-    whether it may send a read receipt: True only when the agent actually
-    processed the message successfully (M2 — every stop path is False).
-    replied: a reply was sent (or attempted with unknown outcome).
-    detail: stable token for logging (gate reason or error class), never
-    message content."""
 
     status: ProcessingStatus
     mark_read: bool
@@ -117,18 +71,10 @@ class MessageProcessor:
         self._max_transcript_messages = max_transcript_messages
 
     def process(self, message: WhatsAppInboundMessage) -> ProcessingOutcome:
-        """Process one inbound message. Never processes the same external
-        message id twice; never lets the agent see a message that must be
-        handled by a human; never confirms an order without a valid
-        approval."""
         with self._lock_factory(message.phone):
             return self._process_locked(message)
 
     def reprocess_deferred(self, conversation_id: UUID) -> list[ProcessingOutcome]:
-        """Run the pipeline over a conversation's stored unread inbound
-        messages (M1): called when an approval activation may have ended
-        a deferral window. Idempotent — messages already processed are
-        read and never re-run; still-deferred ones stay unread."""
         conversation = self._conversations.get_conversation(conversation_id)
         with self._lock_factory(conversation.phone):
             return self._reprocess_locked(conversation)
@@ -203,9 +149,6 @@ class MessageProcessor:
     def _execute(
         self, conversation, customer, message: ConversationMessageResponse
     ) -> ProcessingOutcome:
-        """The pipeline after ingest: state, deferral window, gate, agent
-        run, persistence, dispatch. `message` is the stored inbound row
-        (either just claimed or re-read for reprocessing)."""
         # fresh state at the boundary (H2): the conversation object may
         # be a snapshot from before an operator transition
         conversation = self._conversations.get_conversation(conversation.id)
@@ -336,18 +279,12 @@ class MessageProcessor:
 def _slice_new(
     transcript: Sequence[AgentMessage] | None, input_messages: Sequence[AgentMessage]
 ) -> list[AgentMessage]:
-    """The run's new protocol messages: everything after the input
-    history (agent output only; the input was already persisted)."""
     if transcript is None:
         return []
     return list(transcript[len(input_messages) :])
 
 
 def _tool_order_ids(new_messages: Sequence[AgentMessage], tool_name: str) -> list[UUID]:
-    """Order ids from successful tool results of one tool in the run's
-    new messages. ToolResult content is persisted JSON the executor
-    produced (tool_call_id, tool_name, ok, data.order_id); a malformed
-    entry is skipped, never trusted."""
     order_ids: list[UUID] = []
     for message in new_messages:
         if message.role != "tool":

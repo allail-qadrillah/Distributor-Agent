@@ -1,22 +1,3 @@
-"""Tool handlers, bridge validated arguments + trusted context to services.
-
-One handler per tool. The handler's only job is translation:
-- build the INTERNAL service request from validated args (model-facing
-  subset) + trusted context (customer identity, approval);
-- call the existing business service;
-- translate the service response into a model-safe payload dict (plain
-  JSON types; Decimal becomes str to stay exact);
-- refuse authorization-sensitive operations that lack trusted approval.
-
-Handlers never execute SQL, never touch repositories, never open
-transactions (services own all of that), and never re-implement business
-rules, validation of prices, stock, credit, and status stays in
-ProductInquiryService and OrderService.
-
-Service failures propagate as service exceptions; the executor maps them
-via map_service_error into model-safe tool errors.
-"""
-
 from dataclasses import dataclass
 
 from app.schemas.order import OrderCreate, OrderDetailResponse, OrderItemCreate
@@ -54,9 +35,6 @@ from app.tools.exceptions import ToolHandlerError
 
 @dataclass(frozen=True)
 class ToolServices:
-    """The business services tools are allowed to reach, injected by the
-    application exactly like every other service dependency."""
-
     product_inquiry: ProductInquiryService
     orders: OrderService
 
@@ -64,11 +42,6 @@ class ToolServices:
 def execute_search_products(
     args: SearchProductsArgs, context: ToolContext, services: ToolServices
 ) -> dict:
-    """search_products → ProductInquiryService.search_products.
-
-    Customer identity comes from trusted context only; the search term is
-    the single model-provided value.
-    """
     response = services.product_inquiry.search_products(
         ProductInquiryRequest(
             customer_id=context.customer_id, search_term=args.search_term
@@ -80,14 +53,6 @@ def execute_search_products(
 def execute_create_draft_order(
     args: CreateDraftOrderArgs, context: ToolContext, services: ToolServices
 ) -> dict:
-    """create_draft_order → OrderService.create_draft_order.
-
-    OrderCreate is built HERE from validated args + trusted customer_id;
-    its own validators run again on the complete object (duplicate
-    product rule lives in OrderCreate, nowhere else). Unit prices are
-    resolved by the service from the customer's price list, args carry
-    none and can't.
-    """
     order = OrderCreate(
         customer_id=context.customer_id,
         notes=args.notes,
@@ -103,18 +68,6 @@ def execute_create_draft_order(
 def execute_confirm_order(
     args: ConfirmOrderArgs, context: ToolContext, services: ToolServices
 ) -> dict:
-    """confirm_order → OrderService.confirm_order (guarded twice).
-
-    Guard 1: trusted explicit approval, the user approved exactly ONE
-    order (context.approved_order_id, set only by application logic
-    via ToolContext.with_confirm_order_approval()); confirming a
-    different order, even the same customer's, is refused.
-    Guard 2: ownership, the draft must belong to the trusted customer.
-    customer_id is immutable on an order row, so the read-then-confirm
-    sequence cannot be raced into confirming another customer's order;
-    status races are impossible inside confirm_order's own guarded
-    transition.
-    """
     if context.approved_order_id is None or context.approved_order_id != args.order_id:
         raise ToolHandlerError(
             "unauthorized",
@@ -134,7 +87,6 @@ def execute_confirm_order(
 
 
 def _inquiry_item(product: ProductInquiryItem) -> dict:
-    """One search hit, model-safe: Decimal price as exact string."""
     return {
         "product_id": str(product.product_id),
         "sku": product.sku,
@@ -145,7 +97,6 @@ def _inquiry_item(product: ProductInquiryItem) -> dict:
 
 
 def _order_summary(detail: OrderDetailResponse) -> dict:
-    """Draft or confirmed order summary, model-safe: money as strings."""
     return {
         "order_id": str(detail.id),
         "order_number": detail.order_number,
@@ -168,9 +119,6 @@ def _order_summary(detail: OrderDetailResponse) -> dict:
 
 
 def map_service_error(exc: ServiceError) -> ToolHandlerError:
-    """Translate one service business-rule failure into a model-safe
-    tool error: stable category, Bahasa message the model can relay,
-    identifying detail only (ids, quantities, limits)."""
     if isinstance(exc, CustomerNotFoundError):
         return ToolHandlerError(
             "not_found",
@@ -233,9 +181,6 @@ def map_service_error(exc: ServiceError) -> ToolHandlerError:
             {"order_id": str(exc.order_id)},
         )
     if isinstance(exc, OrderTotalUpdateError):
-        # internal consistency failure inside the confirm transaction:
-        # relayable as a generic failure, but explicitly mapped so a new
-        # subclass can never fall through the fallback silently
         return ToolHandlerError(
             "execution_error",
             "Pembaruan total pesanan gagal.",

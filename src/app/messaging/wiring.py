@@ -1,12 +1,3 @@
-"""Composition root for the Phase 3 messaging stack.
-
-One place builds the real object graph from Settings; tests and the API
-layer override pieces. Fail-fast: a misconfigured classifier (enabled
-with empty credentials) or agent provider raises its configuration
-error HERE, at construction, not mid-conversation. The API layer maps
-those to 503.
-"""
-
 from dataclasses import dataclass
 
 from app.agents.orchestrator import AgentOrchestrator
@@ -40,7 +31,6 @@ from app.whatsapp.adapter import WhatsAppAdapter
 
 @dataclass(frozen=True)
 class MessagingStack:
-    """The built application-layer components the API routes need."""
 
     processor: MessageProcessor
     conversations: ConversationService

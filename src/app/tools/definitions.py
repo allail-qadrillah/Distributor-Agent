@@ -1,24 +1,5 @@
-"""Tool definitions exposed to the model, pure data, no behavior.
-
-Shape follows the verified Surpluss Intelligence contract: the OpenAI
-standard function tool {"type": "function", "function": {...}} passes
-through the marketplace unchanged (docs: reference/tool-format-normalization,
-checked 2026-11-17). Parameter schemas are hand-written inline JSON Schema
-deliberately: no $ref/$defs, so no provider-side resolution risk, and every
-constraint stays readable next to the description it guards.
-
-Safety invariants baked into the definitions (P2.2 acceptance):
-- No definition carries customer identity: the trusted customer id comes
-  from application context (P2.3), never from model arguments.
-- No definition carries prices: the backend resolves unit prices from the
-  customer's price list; the model must not see a price field to fill.
-- confirm_order has no approval argument: explicit user approval lives in
-  trusted application context (P2.3/P2.4), never in model-generated
-  arguments.
-
-Descriptions are Bahasa Indonesia on purpose: the model serves Indonesian
-FMCG customers and the agent instructions are Bahasa too.
-"""
+"""OpenAI standard function tool format passes through Surpluss unchanged.
+See reference/tool-format-normalization."""
 
 from dataclasses import dataclass
 
@@ -29,12 +10,6 @@ CONFIRM_ORDER_TOOL_NAME = "confirm_order"
 
 @dataclass(frozen=True)
 class ToolDefinition:
-    """One model-visible tool: name, description, JSON Schema parameters.
-
-    Validated at construction so a malformed definition fails at import
-    time, not inside a customer conversation. The registry trusts these.
-    """
-
     name: str
     description: str
     parameters: dict
@@ -50,7 +25,6 @@ class ToolDefinition:
             raise ValueError(f"tool {self.name!r} parameters must have type object")
 
     def to_openai_spec(self) -> dict:
-        """The exact wire object sent to the provider in `tools`."""
         return {
             "type": "function",
             "function": {

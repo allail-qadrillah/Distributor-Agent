@@ -20,3 +20,17 @@ For a task with expected memory impact, record the affected memory file in the t
 If implementation reveals an unplanned architecture, command, configuration, constraint, decision, task, or verification change, invoke `project-memory-maintainer` before reporting completion.
 
 Do not invoke the maintainer for documentation-only wording changes unless they alter a project fact, rule, decision, task, or verification result.
+
+## Enforced rules
+
+Each rule names the check that fails before the mistake ships. Add a check at the highest enforcement level when a new rule is needed.
+
+| Rule | Enforcement | File |
+|---|---|---|
+| Migrations must be identical in `src/app/database/migrations/` and `supabase/migrations/` | Test (SHA-256 hash comparison) | `tests/test_migration_identity.py` |
+| Only `app.database.connection` may call `psycopg.connect()` — all other modules use `connect()`/`transaction()` (guarantees `dict_row` row factory) | Test (AST import/call audit) | `tests/test_connection_discipline.py` |
+| No Python source file may contain CRLF line endings | Test (byte scan) | `tests/test_line_endings.py` |
+| Seed rows (e.g. GENERAL price list from migration 001) must survive all test cleanup | Integration test (DB smoke gate) | `tests/integration/test_seed_integrity.py` |
+| SQL in repositories must match test fakes (attempts increment, jsonb Json() wrap, newest-N window) | Integration test (`RUN_DB_SMOKE=1`) | `tests/integration/` (existing) |
+| `map_service_error` must handle every `ServiceError` subclass | Test (`__subclasses__()` exhaustiveness) | `tests/test_tool_handlers.py` |
+| `ARGUMENT_MODELS` keys must match `ToolRegistry.names()` | Test (set equality) | `tests/test_tool_arguments.py` |

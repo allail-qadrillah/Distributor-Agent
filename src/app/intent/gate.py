@@ -1,18 +1,3 @@
-"""Intent gate: classification policy, the only place that decides
-whether a message may reach the main agent.
-
-Policy (agreed, fail closed):
-- order_related with confidence >= threshold → allow the agent;
-- order_related below threshold → human handoff;
-- human_request / out_of_scope / ambiguous → human handoff;
-- classifier timeout, provider error, invalid output → human handoff.
-
-The gate OWNS the threshold; the classifier stays policy-free. The gate
-never raises: every classifier failure is caught here and becomes a
-handoff decision with the error class in the reason, so the message
-processor has one uniform contract.
-"""
-
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -31,9 +16,6 @@ DISABLED_REASON = "intent_gate_disabled"
 
 @dataclass(frozen=True)
 class IntentDecision:
-    """allow_agent=True: the message may reach the main agent.
-    classification is None only when the classifier did not run (disabled
-    or failed). reason is a stable machine token for logging."""
 
     allow_agent: bool
     classification: IntentClassification | None
@@ -41,7 +23,6 @@ class IntentDecision:
 
 
 class IntentGate:
-    """Policy wrapper around one MessageIntentClassifier."""
 
     def __init__(
         self,
@@ -62,7 +43,6 @@ class IntentGate:
     def evaluate(
         self, message: str, context: Sequence[IntentContextMessage] = ()
     ) -> IntentDecision:
-        """Classify and decide. Never raises."""
         if self._classifier is None:
             return IntentDecision(
                 allow_agent=True, classification=None, reason=DISABLED_REASON

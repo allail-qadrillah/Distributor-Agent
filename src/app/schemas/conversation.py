@@ -1,10 +1,3 @@
-"""Conversation, message, outbox, and approval schemas (Phase 3).
-
-Mirrors migration 003. Same conventions as the other schema modules:
-BaseSchema (extra=forbid), Money-style constraints live in the migration,
-these models validate the same shapes for application and API use.
-"""
-
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -26,7 +19,6 @@ HANDOFF_STATES: tuple[ConversationState, ...] = ("needs_human", "human_active")
 
 
 class ToolCallPayload(BaseSchema):
-    """One assistant tool-call turn entry as persisted in messages.tool_calls."""
 
     id: NonBlankStr
     name: NonBlankStr
@@ -58,8 +50,6 @@ class ConversationMessageResponse(BaseSchema):
 
 
 class MessageInsert(BaseSchema):
-    """One transcript message to persist. Shape rules (role/fields pairing)
-    were already validated by AgentMessage; this is the storage projection."""
 
     direction: MessageDirection
     role: TranscriptRole
