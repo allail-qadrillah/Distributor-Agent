@@ -17,7 +17,7 @@ import { displayQr } from './qr-display.js';
 
 export function makeRealSocket(authState) {
   return makeWASocket({
-    authState: { creds: authState.creds, keys: authState.keys },
+    auth: { creds: authState.creds, keys: authState.keys },
     syncFullHistory: false,
   });
 }
