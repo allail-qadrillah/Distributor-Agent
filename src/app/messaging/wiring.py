@@ -31,7 +31,6 @@ from app.whatsapp.adapter import WhatsAppAdapter
 
 @dataclass(frozen=True)
 class MessagingStack:
-
     processor: MessageProcessor
     conversations: ConversationService
     handoff: HandoffManager

@@ -58,6 +58,10 @@ def _phone() -> str:
     return f"+62897{uuid4().int % 1_000_000_000:09d}"
 
 
+def _other_phone() -> str:
+    return f"+62898{uuid4().int % 1_000_000_000:09d}"
+
+
 def _conversations() -> ConversationService:
     return ConversationService(
         ConversationRepository(),
@@ -129,6 +133,7 @@ def test_conversation_identity_and_lazy_link():
 
 def test_inbound_claim_is_atomic_and_idempotent():
     phone = _phone()
+    other_phone = _other_phone()
     conversations = _conversations()
     try:
         first = conversations.ingest_inbound(phone, "P3-A", "pesan pertama")
@@ -138,6 +143,12 @@ def test_inbound_claim_is_atomic_and_idempotent():
         duplicate = conversations.ingest_inbound(phone, "P3-A", "pesan pertama")
         assert duplicate.message is None  # ON CONFLICT DO NOTHING: the claim lost
         assert duplicate.conversation.id == first.conversation.id
+        assert duplicate.duplicate is not None
+        assert duplicate.duplicate.id == first.message.id
+
+        other = conversations.ingest_inbound(other_phone, "P3-A", "pesan salin")
+        assert other.message is None
+        assert other.duplicate is None
 
         second = conversations.ingest_inbound(phone, "P3-B", "pesan kedua")
         assert second.message is not None
@@ -148,6 +159,7 @@ def test_inbound_claim_is_atomic_and_idempotent():
     finally:
         with transaction() as conn:
             _cleanup(conn, phone)
+            _cleanup(conn, other_phone)
 
 
 def test_transcript_roundtrip_with_tool_calls():

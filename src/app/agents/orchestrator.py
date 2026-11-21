@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import Callable
 
@@ -15,8 +16,11 @@ from app.agents.schemas import (
     AgentRunResult,
     AgentToolCall,
 )
+from app.observability import current_correlation_id, log_event
 from app.tools.context import ToolContext
 from app.tools.executor import ToolExecutor
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_MAX_TOOL_ROUNDS = 5
 DEFAULT_MAX_TOOL_CALLS_PER_ROUND = 8
@@ -25,6 +29,12 @@ DEFAULT_MAX_TOOL_CALLS_TOTAL = 16
 
 def _duration_ms(started: float, ended: float) -> int:
     return int((ended - started) * 1000)
+
+
+def _event_correlation_id(context: ToolContext) -> str:
+    # inside a request the trace id wins; outside one (tests, scripts)
+    # the conversation id remains the fallback correlation
+    return current_correlation_id() or context.conversation_id
 
 
 class AgentOrchestrator:
@@ -58,7 +68,13 @@ class AgentOrchestrator:
         events: list[AgentRunEvent] = []
         executed_calls = 0
         try:
-            for _ in range(self._max_tool_rounds):
+            for round_index in range(self._max_tool_rounds):
+                log_event(
+                    _log,
+                    "provider_request_started",
+                    level=logging.DEBUG,
+                    round=round_index,
+                )
                 started = self._clock()
                 response = self._provider.complete(
                     [
@@ -70,11 +86,18 @@ class AgentOrchestrator:
                 events.append(
                     AgentRunEvent(
                         kind="provider_call",
-                        correlation_id=context.conversation_id,
+                        correlation_id=_event_correlation_id(context),
                         response_id=response.response_id,
                         outcome=response.kind,
                         duration_ms=_duration_ms(started, self._clock()),
                     )
+                )
+                log_event(
+                    _log,
+                    "provider_response_received",
+                    outcome=response.kind,
+                    response_id=response.response_id,
+                    duration_ms=_duration_ms(started, self._clock()),
                 )
                 if response.kind == "text":
                     final_text = response.text or ""
@@ -92,6 +115,13 @@ class AgentOrchestrator:
                 self.refuse_oversized_batch(calls, executed_calls)
                 messages.append(AgentMessage(role="assistant", tool_calls=calls))
                 for call in calls:
+                    log_event(
+                        _log,
+                        "tool_execution_started",
+                        level=logging.DEBUG,
+                        tool_name=call.name,
+                        tool_call_id=call.id,
+                    )
                     started = self._clock()
                     result = self._tool_executor.execute(
                         call.id, call.name, call.arguments, context
@@ -99,13 +129,22 @@ class AgentOrchestrator:
                     events.append(
                         AgentRunEvent(
                             kind="tool_execution",
-                            correlation_id=context.conversation_id,
+                            correlation_id=_event_correlation_id(context),
                             tool_call_id=call.id,
                             tool_name=call.name,
                             ok=result.ok,
                             category=result.error.code if result.error else None,
                             duration_ms=_duration_ms(started, self._clock()),
                         )
+                    )
+                    log_event(
+                        _log,
+                        "tool_execution_completed",
+                        tool_name=call.name,
+                        tool_call_id=call.id,
+                        ok=result.ok,
+                        category=result.error.code if result.error else None,
+                        duration_ms=_duration_ms(started, self._clock()),
                     )
                     messages.append(
                         AgentMessage(

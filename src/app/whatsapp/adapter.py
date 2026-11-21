@@ -4,6 +4,8 @@ from uuid import UUID
 
 import httpx
 
+from app.observability import current_correlation_id, is_valid_correlation_id
+
 _MESSAGES_PATH = "/messages"
 
 SendStatus = Literal["sent", "failed", "unknown"]
@@ -16,7 +18,6 @@ class WhatsAppSendOutcome:
 
 
 class WhatsAppAdapter:
-
     def __init__(
         self,
         bridge_url: str,
@@ -35,6 +36,9 @@ class WhatsAppAdapter:
 
     def send(self, outbox_id: UUID, to: str, body: str) -> WhatsAppSendOutcome:
         headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        correlation_id = current_correlation_id()
+        if correlation_id is not None and is_valid_correlation_id(correlation_id):
+            headers["X-Correlation-ID"] = correlation_id
         payload = {"outbox_id": str(outbox_id), "to": to, "text": body}
         try:
             with httpx.Client(

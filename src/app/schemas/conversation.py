@@ -19,7 +19,6 @@ HANDOFF_STATES: tuple[ConversationState, ...] = ("needs_human", "human_active")
 
 
 class ToolCallPayload(BaseSchema):
-
     id: NonBlankStr
     name: NonBlankStr
     arguments: str  # raw JSON object string, same as AgentToolCall
@@ -50,7 +49,6 @@ class ConversationMessageResponse(BaseSchema):
 
 
 class MessageInsert(BaseSchema):
-
     direction: MessageDirection
     role: TranscriptRole
     content: str | None = None

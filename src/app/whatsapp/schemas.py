@@ -8,7 +8,6 @@ from app.schemas.common import BaseSchema, NonBlankStr, PhoneStr
 
 
 class WhatsAppInboundMessage(BaseSchema):
-
     external_message_id: NonBlankStr
     phone: PhoneStr
     text: NonBlankStr
@@ -16,7 +15,6 @@ class WhatsAppInboundMessage(BaseSchema):
 
 
 class WhatsAppDeliveryReport(BaseSchema):
-
     outbox_id: UUID
     status: Literal["delivered", "failed"]
     reported_at: datetime | None = None
@@ -24,7 +22,6 @@ class WhatsAppDeliveryReport(BaseSchema):
 
 
 class WhatsAppEventAck(BaseSchema):
-
     external_message_id: str | None = None
     status: str
     mark_read: bool = False
@@ -32,7 +29,6 @@ class WhatsAppEventAck(BaseSchema):
 
 
 class OutboxDispatchSummary(BaseSchema):
-
     dispatched: int = Field(ge=0)
     results: list[dict] = Field(default_factory=list)
 

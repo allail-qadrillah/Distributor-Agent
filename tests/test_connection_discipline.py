@@ -23,7 +23,6 @@ def _calls_psycopg_connect(file: Path) -> bool:
                 ):
                     return True
             elif isinstance(node.func, ast.Name):
-                # bare connect() — only a violation if from psycopg import connect
                 if node.func.id == "connect" and psycopg_import:
                     return True
     return False

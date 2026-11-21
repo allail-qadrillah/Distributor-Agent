@@ -5,7 +5,6 @@ from app.schemas.common import BaseSchema, NonBlankStr
 
 
 class ProductInquiryRequest(BaseSchema):
-
     customer_id: UUID
     search_term: NonBlankStr  # mirrors DB btrim-not-blank checks
 
@@ -19,5 +18,4 @@ class ProductInquiryItem(BaseSchema):
 
 
 class ProductInquiryResponse(BaseSchema):
-
     products: list[ProductInquiryItem]

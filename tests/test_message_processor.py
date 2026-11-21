@@ -142,8 +142,58 @@ def test_duplicate_never_reprocesses(monkeypatch) -> None:
     second = stack.processor.process(inbound(PHONE, "WA-1", "pesan"))
     assert first.status == "processed"
     assert second.status == "duplicate"
-    assert second.mark_read is False
+    assert second.mark_read is True
     assert len(stack.orchestrator.calls) == 1  # the agent ran exactly once
+
+
+def test_duplicate_after_read_authorizes_read_receipt(monkeypatch) -> None:
+    # the bridge retries a webhook when its HTTP response is lost; the
+    # stored record (status 'read') authorizes the read receipt again
+    stack = build(monkeypatch, [[AgentMessage(role="assistant", content="ok")]])
+    first = stack.processor.process(inbound(PHONE, "WA-1", "pesan"))
+    assert first.status == "processed"
+    assert first.mark_read is True
+    stored = next(
+        r for r in stack.messages_repo.rows.values() if r.external_message_id == "WA-1"
+    )
+    assert stored.status == "read"
+    second = stack.processor.process(inbound(PHONE, "WA-1", "pesan"))
+    assert second.status == "duplicate"
+    assert second.mark_read is True
+
+
+def test_duplicate_unread_does_not_authorize_read_receipt(monkeypatch) -> None:
+    failure = AgentProviderError("provider down")
+    stack = build(monkeypatch, [failure])
+    first = stack.processor.process(inbound(PHONE, "WA-1", "pesan"))
+    assert first.status == "agent_error"
+    assert first.mark_read is False
+    second = stack.processor.process(inbound(PHONE, "WA-1", "pesan"))
+    assert second.status == "duplicate"
+    assert second.mark_read is False
+
+
+def test_duplicate_unknown_sender_stays_unread(monkeypatch) -> None:
+    stack = build(monkeypatch, [])
+    phone = "+6289999999999"  # no registered customer
+    first = stack.processor.process(inbound(phone, "WA-1", "halo admin"))
+    assert first.status == "unknown_sender"
+    assert first.mark_read is False
+    second = stack.processor.process(inbound(phone, "WA-1", "halo admin"))
+    assert second.status == "duplicate"
+    assert second.mark_read is False
+
+
+def test_duplicate_from_other_conversation_not_authorized(monkeypatch) -> None:
+    stack = build(monkeypatch, [[AgentMessage(role="assistant", content="ok")]])
+    first = stack.processor.process(inbound(PHONE, "WA-1", "pesan"))
+    assert first.status == "processed"
+    other_phone = "+628111122222"
+    stack.customer_repo.by_phone[other_phone] = make_customer(other_phone)
+    cross = stack.processor.process(inbound(other_phone, "WA-1", "pesan"))
+    assert cross.status == "duplicate"
+    assert cross.mark_read is False
+    assert cross.conversation_id != first.conversation_id
 
 
 def test_unknown_sender_gets_nothing(monkeypatch) -> None:

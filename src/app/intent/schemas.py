@@ -19,26 +19,22 @@ INTENT_CATEGORIES: tuple[str, ...] = (
 
 
 class IntentClassification(BaseSchema):
-
     category: IntentCategory
     confidence: StrictConfidence = Field(ge=0.0, le=1.0)
     reason: NonBlankStr
 
 
 class IntentContextMessage(BaseSchema):
-
     role: Literal["user", "assistant"]
     content: NonBlankStr
 
 
 class IntentCaseContextMessage(BaseSchema):
-
     role: Literal["user", "assistant"]
     content: NonBlankStr
 
 
 class IntentCase(BaseSchema):
-
     id: NonBlankStr
     message: NonBlankStr
     expected: IntentCategory

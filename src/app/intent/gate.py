@@ -16,14 +16,12 @@ DISABLED_REASON = "intent_gate_disabled"
 
 @dataclass(frozen=True)
 class IntentDecision:
-
     allow_agent: bool
     classification: IntentClassification | None
     reason: str
 
 
 class IntentGate:
-
     def __init__(
         self,
         classifier: MessageIntentClassifier | None,
@@ -39,6 +37,10 @@ class IntentGate:
     @property
     def enabled(self) -> bool:
         return self._classifier is not None
+
+    @property
+    def threshold(self) -> float:
+        return self._threshold
 
     def evaluate(
         self, message: str, context: Sequence[IntentContextMessage] = ()
