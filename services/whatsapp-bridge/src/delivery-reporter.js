@@ -42,6 +42,8 @@ export class DeliveryReporter {
       this.logger.info('receipt_observed', {
         jid: jidHash(entry.key.remoteJid ?? ''),
         status,
+        outbox_id: existing.outboxId,
+        correlation_id: existing.correlationId,
       });
     }
   }
@@ -78,7 +80,9 @@ export class DeliveryReporter {
     };
     let result;
     try {
-      result = await this.client.postDeliveryReport(report);
+      result = await this.client.postDeliveryReport(report, {
+        correlationId: record.correlationId,
+      });
     } catch (error) {
       result = { ok: false, status: null, error: String(error) };
     }
@@ -86,7 +90,9 @@ export class DeliveryReporter {
       this.store.remove(record.messageId);
       this._attempts.delete(record.messageId);
       this._nextTry.delete(record.messageId);
-      this.logger.info('delivery_reported', { outbox_id: record.outboxId, status: record.status });
+      this.logger.info('delivery_reported', {
+        outbox_id: record.outboxId, status: record.status, correlation_id: record.correlationId,
+      });
       return;
     }
     const attempt = (this._attempts.get(record.messageId) ?? 0) + 1;
@@ -97,6 +103,7 @@ export class DeliveryReporter {
       outbox_id: record.outboxId,
       status: result.status ?? result.error ?? 'unknown',
       delay_ms: delay,
+      correlation_id: record.correlationId,
     });
   }
 }

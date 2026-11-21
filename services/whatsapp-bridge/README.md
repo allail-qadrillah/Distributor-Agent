@@ -26,6 +26,7 @@ WHATSAPP_WEBHOOK_SECRET     # X-Webhook-Secret on calls to the FastAPI webhooks
 WHATSAPP_BRIDGE_FASTAPI_URL # e.g. http://app:8000
 WHATSAPP_BRIDGE_HOST=127.0.0.1 WHATSAPP_BRIDGE_PORT=3001
 WHATSAPP_BRIDGE_QR_MODE     # local (terminal QR) | docker (no terminal: stops the container)
+LOG_LEVEL=info              # fatal|error|warn|info|debug|trace (pino names)
 ```
 
 Pairing: first run has no session; Baileys emits a QR, it is rendered in
@@ -132,7 +133,7 @@ ingestion stops, draining continues); below 60% it reconnects.
 
 ```text
 src/config.js             env parsing, fail closed
-src/logger.js             structured JSON logs + redaction (jid hashing)
+src/logger.js             pino JSON logs + redaction (jid hashing), pino-pretty on a dev TTY
 src/fsutil.js             durable atomic writes, dir fsync, dirSize
 src/backoff.js            exponential backoff + jitter
 src/qr.js                 in-repo QR encoder (ISO/IEC 18004, byte mode)
@@ -151,10 +152,26 @@ src/capacity.js           1GB guard with hysteresis
 src/index.js              wiring + graceful SIGTERM shutdown
 ```
 
+## Logging and correlation
+
+One JSON line per event on stdout (`ts`, `level`, `service:
+whatsapp-bridge`, `event`, fields). Message bodies, phones, tokens,
+secrets, QR payloads, and Baileys creds are redacted at the destination
+stream — every line is scrubbed after serialization, so no call path can
+bypass redaction. Interactive dev terminals get pino-pretty colors
+(devDependency, never installed in production); production logs JSON.
+
+Cross-service tracing: every inbound record gets one `correlationId`
+(random UUID, stored on the record so retries reuse it) sent as
+`X-Correlation-ID` to `/webhooks/whatsapp/events`. On the outbound path
+the Python caller's `X-Correlation-ID` on `POST /messages` is persisted
+in the delivery mapping and sent back on the delivery report, so one
+trace id spans Python → bridge → WhatsApp → Python.
+
 ## Tests
 
 ```text
-npm test     # node:test, 135 tests; no network, no WhatsApp
+npm test     # node:test, 151 tests; no network, no WhatsApp
 ```
 
 `qrcode` is a devDependency used only as an oracle for the in-repo QR

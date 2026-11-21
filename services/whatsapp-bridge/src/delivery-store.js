@@ -17,11 +17,12 @@ export class DeliveryStore {
     return join(this.dir, `${messageId}.json`);
   }
 
-  save({ messageId, outboxId, to }) {
+  save({ messageId, outboxId, to, correlationId }) {
     const record = {
       messageId,
       outboxId,
       to,
+      correlationId,
       status: null,
       createdAt: new Date().toISOString(),
     };

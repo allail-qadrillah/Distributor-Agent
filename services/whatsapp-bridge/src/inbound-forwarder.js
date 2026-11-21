@@ -12,6 +12,7 @@
 //                             the API; retries would never succeed)
 //   any other status,
 //   timeout, network error -> retry with backoff (5 min cap)
+import { randomUUID } from 'node:crypto';
 import { computeBackoffMs } from './backoff.js';
 import { jidHash } from './logger.js';
 
@@ -100,10 +101,15 @@ export class InboundForwarder {
   }
 
   async _deliver(record) {
+    // One correlation id per delivery flow: generated on the first
+    // attempt, stored on the record so every retry of the same message
+    // carries the same trace id to the Python side.
+    const correlationId = record.correlationId ?? randomUUID();
+    record.correlationId = correlationId;
     const payload = { type: record.type, messages: [record.message] };
     let result;
     try {
-      result = await this.client.postEvents(payload);
+      result = await this.client.postEvents(payload, { correlationId });
     } catch (error) {
       result = { status: null, ok: false, body: null, retryAfterMs: null, error: String(error) };
     }
@@ -118,18 +124,18 @@ export class InboundForwarder {
         // the Python side dedups the redelivery and re-answers mark_read
         const delay = this.backoff(record.attempts ?? 0, { maxMs: this.maxBackoffMs }, this.random);
         this.store.markRetry(record, delay);
-        this.logger.warn('inbound_mark_read_failed', { jid: jidHash(record.jid), error: String(error) });
+        this.logger.warn('inbound_mark_read_failed', { jid: jidHash(record.jid), correlation_id: correlationId, error: String(error) });
         return 'retry';
       }
       this.store.markDone(record.id);
-      this.logger.info('inbound_delivered', { jid: jidHash(record.jid), attempts: record.attempts ?? 0 });
+      this.logger.info('inbound_delivered', { jid: jidHash(record.jid), attempts: record.attempts ?? 0, correlation_id: correlationId });
       return 'done';
     }
 
     const status = result.status;
     if (status != null && QUARANTINE_CODES.has(status)) {
       this.store.markQuarantine(record, `http_${status}`);
-      this.logger.warn('inbound_quarantined', { jid: jidHash(record.jid), status });
+      this.logger.warn('inbound_quarantined', { jid: jidHash(record.jid), status, correlation_id: correlationId });
       return 'quarantine';
     }
     if (status != null && PAUSE_CODES.has(status)) {
@@ -146,6 +152,7 @@ export class InboundForwarder {
       jid: jidHash(record.jid),
       status: status ?? result.error ?? 'unknown',
       delay_ms: delay,
+      correlation_id: correlationId,
     });
     return 'retry';
   }

@@ -36,10 +36,22 @@ async function readBody(req) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+// Cross-service tracing: pass the caller's X-Correlation-ID through to
+// the outbound sender. Garbage is dropped, not forwarded.
+const CORRELATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function requestCorrelationId(req) {
+  const header = req.headers['x-correlation-id'];
+  return typeof header === 'string' && CORRELATION_ID_PATTERN.test(header) ? header : undefined;
+}
+
 export function createHttpServer({ token, outbound, isReady, logger }) {
   const server = createServer((req, res) => {
     const done = (status, body) => {
-      logger.info('http_request', { method: req.method, path: req.url, status });
+      logger.info('http_request', {
+        method: req.method, path: req.url, status,
+        correlation_id: requestCorrelationId(req),
+      });
       sendJson(res, status, body);
     };
     if (req.method === 'GET' && req.url === '/health') {
@@ -59,7 +71,8 @@ export function createHttpServer({ token, outbound, isReady, logger }) {
         } catch {
           throw new Error('invalid_json');
         }
-        return outbound.handle(payload).then((result) => done(result.status, result.body));
+        const correlationId = requestCorrelationId(req);
+        return outbound.handle(payload, { correlationId }).then((result) => done(result.status, result.body));
       }).catch((error) => {
         if (error?.message === 'body_too_large') return done(413, { status: 'failed', error: 'body_too_large' });
         if (error?.message === 'invalid_json') return done(400, { status: 'failed', error: 'invalid_json' });

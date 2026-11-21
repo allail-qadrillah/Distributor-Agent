@@ -30,7 +30,7 @@ export async function startBridge({
   exit = (code) => process.exit(code),
   capacityIntervalMs = 10_000,
 }) {
-  const logger = createLogger();
+  const logger = createLogger({ level: config.logLevel });
   const sessionStore = new LocalFileSessionStore({ authDir: join(config.dataDir, 'auth') });
   const inboundStore = new InboundStore({ dataDir: config.dataDir, logger });
   const deliveryStore = new DeliveryStore({ dataDir: config.dataDir, logger });

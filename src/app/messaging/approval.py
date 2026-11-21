@@ -1,8 +1,12 @@
+import logging
 from uuid import UUID
 
 from app.database.connection import transaction
+from app.observability import log_event
 from app.repositories.approval import ApprovalRepository
 from app.schemas.conversation import OrderApprovalResponse
+
+_log = logging.getLogger(__name__)
 
 
 class ApprovalManager:
@@ -29,9 +33,18 @@ class ApprovalManager:
         self, outbox_id: UUID, conn=None
     ) -> list[OrderApprovalResponse]:
         if conn is not None:
-            return self._approvals.activate_for_delivery(conn, outbox_id)
-        with transaction() as own_conn:
-            return self._approvals.activate_for_delivery(own_conn, outbox_id)
+            activated = self._approvals.activate_for_delivery(conn, outbox_id)
+        else:
+            with transaction() as own_conn:
+                activated = self._approvals.activate_for_delivery(own_conn, outbox_id)
+        if activated:
+            log_event(
+                _log,
+                "approval_activated",
+                outbox_id=str(outbox_id),
+                activated=len(activated),
+            )
+        return activated
 
     def pending_exists(self, conversation_id: UUID) -> bool:
         with transaction() as conn:
@@ -50,4 +63,11 @@ class ApprovalManager:
                 row = self._approvals.consume(conn, conversation_id, order_id)
                 if row is not None:
                     consumed.append(row)
+        if consumed:
+            log_event(
+                _log,
+                "approval_consumed",
+                conversation_id=str(conversation_id),
+                consumed=len(consumed),
+            )
         return consumed

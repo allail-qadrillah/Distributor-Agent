@@ -7,24 +7,28 @@ export class FastApiClient {
     this.fetch = fetchImpl ?? globalThis.fetch;
   }
 
-  postEvents(payload) {
-    return this._post('/webhooks/whatsapp/events', payload);
+  postEvents(payload, { correlationId } = {}) {
+    return this._post('/webhooks/whatsapp/events', payload, correlationId);
   }
 
-  postDeliveryReport(report) {
-    return this._post('/webhooks/whatsapp/delivery', report);
+  postDeliveryReport(report, { correlationId } = {}) {
+    return this._post('/webhooks/whatsapp/delivery', report, correlationId);
   }
 
-  async _post(path, payload) {
+  async _post(path, payload, correlationId) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      const headers = {
+        'content-type': 'application/json',
+        'x-webhook-secret': this.webhookSecret,
+      };
+      if (correlationId) {
+        headers['x-correlation-id'] = correlationId;
+      }
       const response = await this.fetch(this.baseUrl + path, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-webhook-secret': this.webhookSecret,
-        },
+        headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
       });

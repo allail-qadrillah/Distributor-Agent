@@ -38,14 +38,12 @@ class OrderItemResponse(BaseSchema):
 
 
 class OrderItemInsert(BaseSchema):
-
     product_id: UUID
     quantity: Annotated[int, Field(gt=0)]  # mirrors CHECK (quantity > 0)
     unit_price: Money  # mirrors numeric(14,2) CHECK (unit_price >= 0)
 
 
 class OrderCreate(BaseSchema):
-
     customer_id: UUID
     notes: str | None = None
     items: Annotated[list[OrderItemCreate], Field(min_length=1)]
@@ -77,5 +75,4 @@ class OrderResponse(BaseSchema):
 
 
 class OrderDetailResponse(OrderResponse):
-
     items: list[OrderItemResponse]

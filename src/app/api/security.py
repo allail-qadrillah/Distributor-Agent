@@ -16,12 +16,16 @@ def _credential_matches_or_dev_bypass(presented: str | None, expected: str) -> b
 def verify_webhook_secret(
     x_webhook_secret: str | None = Header(default=None),
 ) -> None:
-    if not _credential_matches_or_dev_bypass(x_webhook_secret, settings.whatsapp_webhook_secret):
+    if not _credential_matches_or_dev_bypass(
+        x_webhook_secret, settings.whatsapp_webhook_secret
+    ):
         raise HTTPException(status_code=401, detail="webhook unauthorized")
 
 
 def verify_operator_token(
     x_operator_token: str | None = Header(default=None),
 ) -> None:
-    if not _credential_matches_or_dev_bypass(x_operator_token, settings.operator_api_token):
+    if not _credential_matches_or_dev_bypass(
+        x_operator_token, settings.operator_api_token
+    ):
         raise HTTPException(status_code=401, detail="operator unauthorized")

@@ -1,4 +1,6 @@
 import json
+import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -15,6 +17,7 @@ from app.messaging.conversation_service import ConversationService
 from app.messaging.handoff import HandoffManager
 from app.messaging.locking import conversation_lock
 from app.messaging.outbox import OutboxProcessor
+from app.observability import log_event, mask_phone
 from app.schemas.conversation import ConversationMessageResponse
 from app.tools.context import ToolContext
 from app.tools.definitions import (
@@ -36,10 +39,11 @@ ProcessingStatus = Literal[
 
 IDENTITY_MISMATCH_REASON = "identity_mismatch"
 
+_log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ProcessingOutcome:
-
     status: ProcessingStatus
     mark_read: bool
     conversation_id: UUID | None = None
@@ -71,8 +75,23 @@ class MessageProcessor:
         self._max_transcript_messages = max_transcript_messages
 
     def process(self, message: WhatsAppInboundMessage) -> ProcessingOutcome:
+        started = time.monotonic()
         with self._lock_factory(message.phone):
-            return self._process_locked(message)
+            outcome = self._process_locked(message)
+        log_event(
+            _log,
+            "message_processed",
+            status=outcome.status,
+            mark_read=outcome.mark_read,
+            replied=outcome.replied,
+            conversation_id=(
+                str(outcome.conversation_id)
+                if outcome.conversation_id is not None
+                else None
+            ),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        return outcome
 
     def reprocess_deferred(self, conversation_id: UUID) -> list[ProcessingOutcome]:
         conversation = self._conversations.get_conversation(conversation_id)
@@ -86,7 +105,17 @@ class MessageProcessor:
             message.phone, message.external_message_id, message.text
         )
         conversation = inbound.conversation
+        log_event(
+            _log,
+            "identity_resolved",
+            level=(logging.WARNING if inbound.identity_mismatch else logging.INFO),
+            customer_found=inbound.customer is not None,
+            identity_mismatch=inbound.identity_mismatch,
+            phone=mask_phone(message.phone),
+            conversation_id=str(conversation.id),
+        )
         if inbound.message is None:
+            log_event(_log, "duplicate_inbound", conversation_id=str(conversation.id))
             # duplicate claim: the stored record authorizes a repeat read
             # receipt only when it was actually read (Phase 4 §5); an
             # unread or cross-conversation record stays unauthorized
@@ -159,6 +188,12 @@ class MessageProcessor:
         # be a snapshot from before an operator transition
         conversation = self._conversations.get_conversation(conversation.id)
         if conversation.state != "active":
+            log_event(
+                _log,
+                "human_handling",
+                state=conversation.state,
+                conversation_id=str(conversation.id),
+            )
             # needs_human / human_active: hard stop before the gate
             return ProcessingOutcome(
                 status="human_handling",
@@ -167,6 +202,12 @@ class MessageProcessor:
                 detail=f"state:{conversation.state}",
             )
         if self._approvals.pending_exists(conversation.id):
+            log_event(
+                _log,
+                "inbound_deferred",
+                reason="approval_pending_delivery",
+                conversation_id=str(conversation.id),
+            )
             # M1: an order summary is awaiting its delivery confirmation.
             # A reply here is very plausibly a confirmation, but approval
             # is NOT inferred from message arrival: defer (stored unread,
@@ -183,7 +224,21 @@ class MessageProcessor:
             before_seq=message.seq,
             limit=self._max_intent_context,
         )
+        started = time.monotonic()
         decision = self._gate.evaluate(message.content or "", context)
+        classification = decision.classification
+        log_event(
+            _log,
+            "intent_decision",
+            level=(logging.INFO if decision.allow_agent else logging.WARNING),
+            allow_agent=decision.allow_agent,
+            category=classification.category if classification else None,
+            confidence=classification.confidence if classification else None,
+            threshold=self._gate.threshold,
+            reason=decision.reason,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            conversation_id=str(conversation.id),
+        )
         if not decision.allow_agent:
             self._handoff.request_handoff(
                 conversation.id,
@@ -204,6 +259,14 @@ class MessageProcessor:
                 )
             )
         except ValidationError as exc:
+            log_event(
+                _log,
+                "transcript_invalid",
+                level=logging.ERROR,
+                conversation_id=str(conversation.id),
+                error_type="ValidationError",
+                exc=exc,
+            )
             # corrupt transcript store: fail loud, fail closed (no agent
             # run, no reply, message stays unread); the message itself is
             # already persisted
@@ -220,9 +283,23 @@ class MessageProcessor:
             conversation_id=str(conversation.id),
             approved_order_id=approval.order_id if approval is not None else None,
         )
+        log_event(
+            _log,
+            "agent_run_started",
+            conversation_id=str(conversation.id),
+        )
+        started = time.monotonic()
         try:
             run = self._orchestrator.run(agent_input, tool_context)
         except AgentError as exc:
+            log_event(
+                _log,
+                "agent_run_failed",
+                level=logging.ERROR,
+                conversation_id=str(conversation.id),
+                error_type=type(exc).__name__,
+                exc=exc,
+            )
             new_messages = _slice_new(exc.partial_transcript, agent_input.messages)
             if new_messages:
                 # preserve partial tool exchanges; never retry them
@@ -234,6 +311,14 @@ class MessageProcessor:
                 detail=type(exc).__name__,
             )
 
+        log_event(
+            _log,
+            "agent_run_completed",
+            conversation_id=str(conversation.id),
+            response_id=run.response_id,
+            tool_calls=sum(1 for e in run.events if e.kind == "tool_execution"),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         new_messages = _slice_new(run.transcript, agent_input.messages)
         confirmed = _tool_order_ids(new_messages, CONFIRM_ORDER_TOOL_NAME)
         drafts = _tool_order_ids(new_messages, CREATE_DRAFT_ORDER_TOOL_NAME)

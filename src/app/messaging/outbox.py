@@ -1,13 +1,18 @@
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
 from app.database.connection import transaction
 from app.messaging.approval import ApprovalManager
+from app.observability import log_event
 from app.repositories.conversation import ConversationRepository
 from app.repositories.outbox import OutboxRepository
 from app.schemas.conversation import OrderApprovalResponse, OutboxMessageResponse
 from app.whatsapp.adapter import WhatsAppAdapter, WhatsAppSendOutcome
+
+_log = logging.getLogger(__name__)
 
 SendResultStatus = Literal["sent", "failed", "unknown"]
 
@@ -17,7 +22,6 @@ DEFAULT_STALE_AFTER_SECONDS = 60.0
 
 @dataclass(frozen=True)
 class SendReport:
-
     outbox_id: UUID
     status: SendResultStatus
     conversation_id: UUID | None = None
@@ -26,7 +30,6 @@ class SendReport:
 
 @dataclass(frozen=True)
 class DeliveryReconciliation:
-
     row: OutboxMessageResponse | None
     activated: list[OrderApprovalResponse] = field(default_factory=list)
 
@@ -84,11 +87,32 @@ class OutboxProcessor:
                 if row is not None and delivered
                 else []
             )
+        log_event(
+            _log,
+            "delivery_report_reconciled",
+            outbox_id=str(outbox_id),
+            delivered=delivered,
+            status=row.status if row is not None else "already_final",
+            activated=len(activated),
+        )
         return DeliveryReconciliation(row, activated)
 
     def reconcile_stale_sending(self) -> list[OutboxMessageResponse]:
         with transaction() as conn:
-            return self._outbox.reconcile_stale_sending(conn, self._stale_after_seconds)
+            rows = self._outbox.reconcile_stale_sending(conn, self._stale_after_seconds)
+        for row in rows:
+            log_event(
+                _log,
+                "stale_sending_reconciled",
+                level=logging.WARNING,
+                outbox_id=str(row.id),
+                conversation_id=(
+                    str(row.conversation_id)
+                    if row.conversation_id is not None
+                    else None
+                ),
+            )
+        return rows
 
     def _reconcile_stale_if_configured(self) -> list[SendReport]:
         rows = self.reconcile_stale_sending()
@@ -108,13 +132,35 @@ class OutboxProcessor:
             )
             if claimed is None:
                 return None
+            log_event(
+                _log,
+                "outbox_message_claimed",
+                outbox_id=str(claimed.id),
+                attempts=claimed.attempts,
+            )
             conversation = self._conversations.get_by_id(conn, claimed.conversation_id)
         assert conversation is not None  # FK guarantees the row exists
         assert self._adapter is not None
+        log_event(_log, "dispatch_started", outbox_id=str(claimed.id))
+        started = time.monotonic()
         outcome: WhatsAppSendOutcome = self._adapter.send(
             outbox_id=claimed.id, to=conversation.phone, body=claimed.body
         )
         status = outcome.status
+        duration_ms = int((time.monotonic() - started) * 1000)
+        log_event(
+            _log,
+            {
+                "sent": "dispatch_completed",
+                "failed": "dispatch_failed",
+                "unknown": "dispatch_outcome_unknown",
+            }[status],
+            level=(logging.INFO if status == "sent" else logging.ERROR),
+            outbox_id=str(claimed.id),
+            status=status,
+            error=outcome.error,
+            duration_ms=duration_ms,
+        )
         # record the outcome AND activate approvals in ONE transaction:
         # 'sent' + approval-stuck-pending cannot diverge on a crash (H3)
         activated: list[OrderApprovalResponse] = []

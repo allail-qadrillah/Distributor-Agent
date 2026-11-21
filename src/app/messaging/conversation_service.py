@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from app.messaging.exceptions import (
     InvalidConversationStateError,
 )
 from app.messaging.identity import IdentityResolver
+from app.observability import log_event
 from app.repositories.approval import ApprovalRepository
 from app.repositories.conversation import ConversationRepository
 from app.repositories.message import MessageRepository
@@ -21,10 +23,11 @@ from app.schemas.conversation import (
 )
 from app.schemas.customer import CustomerResponse
 
+_log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class InboundResult:
-
     conversation: ConversationResponse
     message: ConversationMessageResponse | None
     customer: CustomerResponse | None
@@ -36,7 +39,6 @@ class InboundResult:
 
 @dataclass(frozen=True)
 class PersistedRun:
-
     messages: list[ConversationMessageResponse]
     outbound: OutboxMessageResponse | None
 
@@ -88,6 +90,17 @@ class ConversationService:
                 stored = self._messages.get_by_external_id(conn, external_message_id)
                 if stored is not None and stored.conversation_id == conversation.id:
                     duplicate = stored
+        log_event(
+            _log,
+            "conversation_resolved",
+            conversation_id=str(conversation.id),
+            state=conversation.state,
+            customer_id=(
+                str(conversation.customer_id)
+                if conversation.customer_id is not None
+                else None
+            ),
+        )
         return InboundResult(conversation, message, customer, mismatch, duplicate)
 
     def customer_by_phone(self, phone: str) -> CustomerResponse | None:
@@ -160,11 +173,26 @@ class ConversationService:
                     outbound = self._outbox.create(
                         conn, row.id, conversation_id, row.content
                     )
+            if outbound is not None:
+                log_event(
+                    _log,
+                    "outbox_message_created",
+                    outbox_id=str(outbound.id),
+                    conversation_id=str(conversation_id),
+                )
             if outbound is not None and drafts and self._approvals is not None:
                 for order_id in drafts:
-                    self._approvals.create_pending(
+                    pending = self._approvals.create_pending(
                         conn, conversation_id, order_id, outbound.id
                     )
+                    if pending is not None:
+                        log_event(
+                            _log,
+                            "approval_registered",
+                            order_id=str(order_id),
+                            outbox_id=str(outbound.id),
+                            conversation_id=str(conversation_id),
+                        )
         return PersistedRun(rows, outbound)
 
     # -- conversation state / listing ------------------------------------

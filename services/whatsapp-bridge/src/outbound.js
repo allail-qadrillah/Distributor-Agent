@@ -54,7 +54,10 @@ export class OutboundSender {
   }
 
   // Returns { status, body } — body always carries {status, error?}.
-  async handle(payload) {
+  // `opts.correlationId` is the X-Correlation-ID from the Python caller:
+  // it is persisted in the delivery mapping so the eventual delivery
+  // report carries the same trace id back.
+  async handle(payload, { correlationId } = {}) {
     const invalid = validateOutboundRequest(payload);
     if (invalid) {
       return { status: 400, body: { status: 'failed', error: invalid } };
@@ -70,27 +73,33 @@ export class OutboundSender {
     }
     if (turn) await turn; // our slot in the FIFO behind the current send
     try {
-      return await this._sendOne(payload);
+      return await this._sendOne(payload, correlationId);
     } finally {
       this._release();
     }
   }
 
-  async _sendOne({ outbox_id, to, text }) {
+  async _sendOne({ outbox_id, to, text }, correlationId) {
     const jid = phoneToJid(to);
     const messageId = this.generateId();
-    this.store.save({ messageId, outboxId: outbox_id, to: jid });
+    this.store.save({ messageId, outboxId: outbox_id, to: jid, correlationId });
     try {
       await this._withTimeout(this.send(jid, text, messageId));
-      this.logger.info('outbound_sent', { jid: jidHash(jid), message_id: messageId });
+      this.logger.info('outbound_sent', {
+        jid: jidHash(jid), message_id: messageId, outbox_id, correlation_id: correlationId,
+      });
       return { status: 200, body: { status: 'sent', message_id: messageId } };
     } catch (error) {
       if (error?.timeout) {
-        this.logger.error('outbound_send_timeout', { jid: jidHash(jid), message_id: messageId });
+        this.logger.error('outbound_send_timeout', {
+          jid: jidHash(jid), message_id: messageId, outbox_id, correlation_id: correlationId,
+        });
         return { status: 500, body: { status: 'unknown', error: 'send_timeout' } };
       }
       this.store.remove(messageId);
-      this.logger.warn('outbound_send_failed', { jid: jidHash(jid), error: String(error) });
+      this.logger.warn('outbound_send_failed', {
+        jid: jidHash(jid), outbox_id, correlation_id: correlationId, error: String(error),
+      });
       return { status: 200, body: { status: 'failed', error: 'send_failed' } };
     }
   }

@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     app_environment: Literal["development", "production"] = "production"
+    log_level: str = "INFO"
     supabase_db_url: str = ""
     openai_api_key: str = ""
     openai_model: str = ""

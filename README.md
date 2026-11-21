@@ -28,6 +28,8 @@ fail closed in production).
   approvals, outbox, processor, per-phone locking
 - `src/app/whatsapp`, Baileys event normalization + bridge adapter
   (contract: `docs/notes/P3-whatsapp-adapter.md`)
+- `src/app/observability`, structured logging (`log_event`), redaction,
+  correlation-id middleware support (`X-Correlation-ID` contextvar)
 - `tests/`, pytest (`tests/integration/` = live-DB smoke tests, gated)
 
 Dependency direction: `api → messaging → tools → services → repositories → database`.
@@ -44,6 +46,13 @@ need `WHATSAPP_WEBHOOK_SECRET`, operator routes need `OPERATOR_API_TOKEN`,
 and `INTENT_CLASSIFIER_ENABLED=false` / a bridge URL without a token are
 refused at startup. `APP_ENVIRONMENT=development` is the documented bypass
 for local work.
+
+Logs are structured events (JSON in production, colored console on a dev
+TTY). Every request gets a validated `X-Correlation-ID` (generated when
+missing) echoed on the response, carried through the message pipeline into
+agent runs, sent to the bridge, and returned on delivery reports — one
+trace id spans the whole flow. `LOG_LEVEL` (default `INFO`) sets verbosity
+for the app and the bridge alike.
 
 ## Test
 

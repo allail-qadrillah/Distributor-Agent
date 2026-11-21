@@ -14,7 +14,6 @@ _SKIP_INVALID = "invalid_event_shape"
 
 @dataclass(frozen=True)
 class NormalizedInbound:
-
     message: WhatsAppInboundMessage | None
     skip_reason: str | None
 
